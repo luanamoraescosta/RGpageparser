@@ -1,15 +1,4 @@
----
 
-title: "RGpageparser"
-subtitle: "Documentation"
-author: "Luana Moraes Costa"
-date: today
-format:
-html:
-toc: true
-toc-depth: 2
-theme: cosmo
-------------
 
 # Overview
 
