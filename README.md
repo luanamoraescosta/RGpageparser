@@ -80,7 +80,3 @@ The pipeline produces:
 * `rg8_enriched.xml`: XML enriched with page numbers.
 * `page_mapping.json`: entry-to-page mapping.
 * `debug/*.tsv`: validation and diagnostic reports.
-
-# Citation
-
-If you use this software in research, please cite the repository appropriately.
