@@ -1,0 +1,23 @@
+page	entry	sub_id	score	status	scan	candidate_entries	skipped_header_entry	review_note	ocr_last_lines
+11	82	10800082-8	80.95	manual	H4 6481 (8,1_0081.jpg	81|82		chosen candidate 1	iul. 62 L579 123's. - 1. b. iul. 62 T 9 236) = aul 62), 9: 236°,
+14	97	10800097-1	95.89	manual	H4 6481 (8,1_0084.jpg	96|97	98	chosen candidate 1	97 Albertus Mulfinger: |. b. (lic. elig. confess.) decb. 59 T 9 79°.
+21	127	10800127-3	44.64	manual	H4 6481 (8,1_0091.jpg	126|127		chosen candidate 1	Quartam capellam in Authoesden nunc. Leod. dioc. p. Johannem
+11	82	10800082-8	0	80.95	manual	H4 6481 (8,1_0081.jpg	81|82|83		chosen candidate 1	iul. 62 L579 123's. - 1. b. iul. 62 T 9 236) = aul 62), 9: 236°,
+90	573	10800573-5	0	79.17	manual	H4 6481 (8,1_0160.jpg	572|573|574		chosen candidate 1	Pantaleonis: “Martini ain
+100	634	10800634-19	0	100.00	manual	H4 6481 (8,1_0170.jpg	633|634|635		chosen candidate 1	Martini Colon. et dec. s. Salvatoris Traiect. eorum conserv. iurisd. ab-
+11	82	10800082-8	0	80.95	manual	H4 6481 (8,1_0081.jpg	complete-on-page	0.000	1.000	81|82|83		chosen candidate 1	iul. 62 L579 123's. - 1. b. iul. 62 T 9 236) = aul 62), 9: 236°,
+90	573	10800573-5	0	79.17	manual	H4 6481 (8,1_0160.jpg	continues	0.251	0.301	572|573|574		chosen candidate 1	Pantaleonis: “Martini ain
+100	634	10800634-19	0	100.00	manual	H4 6481 (8,1_0170.jpg	continues	0.477	0.690	633|634|635		chosen candidate 1	Martini Colon. et dec. s. Salvatoris Traiect. eorum conserv. iurisd. ab-
+172	1197	10801197-6	0	62.50	manual	H4 6481 (8,1_0242.jpg	continues	0.333	0.358	1196|1197|1198		manual override via stage3b	pari- f72
+190	1301	10801301-1	0	50.00	manual	H4 6481 (8,1_0260.jpg	continues	0.269	0.394	1300|1301|1302		manual override via stage3b	eccl. patron. 59 S 523 See)
+211	1447	10801447-3	0	86.67	manual	H4 6481 (8,1_0281.jpg	ends-here	0.833	0.910	1446|1447|1448		manual override via stage3b	eccl. s. Blasii Northusen Ma- par.
+216	1491	10801491-3	0	79.31	manual	H4 6481 (8,1_0286.jpg	starts-here	0.064	0.173	1490|1491|1492		manual override via stage3b	restit. Lebuini Daventrien. Aoi
+320	2140	10802140-5	0	92.98	manual	H4 6481 (8,1_0390.jpg	starts-here	0.000	0.288	2139|2140|2141		manual override via stage3b	521 97° - de nova prov. de can. et preb. eccl. s. Lebuini Daventrien.
+451	3089	10803089-1	0	100.00	manual	H4 6481 (8,1_0521.jpg	complete-on-page	0.000	1.000	3088|3089|3090		manual override via stage3b	3089.Johannes de Hurnhaim: pensio, August. s. d. I 329 3°
+510	3556	10803556-1	0	42.42	manual	H4 6481 (8,1_0582.jpg	ends-here	0.765	1.000	3555|3556|3557		manual override via stage3b	106's. ES OE es EN
+572	4010	10804010-1	0	42.86	manual	H4 6481 (8,1_0644.jpg	ends-here	0.973	0.997	4009|4010|4011		manual override via stage3b	99", S72
+711	5125	10805125-1	0	100.00	manual	H4 6481 (8,1_0783.jpg	starts-here	0.081	0.290	5124|5125|5126		manual override via stage3b	Magunt. dioc. (35 m. arg.) quib. quond. Conradus aep. Magunt. de
+739	5292	10805292-1	0	98.41	manual	H4 6481 (8,1_0811.jpg	continues	0.603	0.716	5291|5292|5293		manual override via stage3b	dam bona donavit sup. quib. Jaco- bus ep. Petinen. eos in causam tra-
+768	5509	10805509-2	0	70.83	manual	H4 6481 (8,1_0840.jpg	starts-here	0.000	0.153	5508|5509|5510		manual override via stage3b	in cur. 13. oct. 61 S 543 10%s. - de perp. capn. capel. s. Johannis bapt.
+814	5804	10805804-1	0	86.67	manual	H4 6481 (8,1_0886.jpg	continues	0.773	0.873	5803|5804|5805		manual override via stage3b	dioc. p. Bessarionem in Ala- gunt.
+815	5815	10805815-1	0	91.23	manual	H4 6481 (8,1_0887.jpg	starts-here	0.000	0.166	5814|5815|5816		manual override via stage3b	204". Priorissa et monial. mon. in
