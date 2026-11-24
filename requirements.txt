@@ -1,0 +1,9 @@
+opencv-python>=4.8
+numpy>=1.24
+pytesseract>=0.3.10
+Pillow>=9.0
+rapidfuzz>=3.0
+# optional, only for rgpage.py --easyocr:
+# easyocr>=1.7
+# matplotlib is only needed by the archived manual review stages:
+# matplotlib>=3.7

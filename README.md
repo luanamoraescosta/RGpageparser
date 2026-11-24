@@ -1,156 +1,164 @@
 # RGpageparser
 
-**RGpageparser** is a Python OCR pipeline that reconstructs, for every `<lemma>`/`<sublemma>` entry in an XML edition of a *Repertorium Germanicum* (RG) volume, the exact **page span** (`page_start` / `page_end`) it occupies in the original scanned book.
+For each page scan of a *Repertorium Germanicum* volume, answer two questions:
 
-It works by OCR-ing the page scans, extracting the margin entry numbers and printed page numbers, fuzzy-matching OCR text against the XML's existing `<head>`/`<sublemma>` labels, and writing that information back into a single enriched XML file — with manual review steps for anything the OCR can't resolve confidently on its own.
+1. **Which printed page number is on the scan?**
+2. **Which entry block is at the bottom of the page, and does it end there or
+   continue on the next page?** The block can be the `head` of the entry or a
+   regest (`rg1`, `rg2`, …).
 
-> This tool was built for a specific *Repertorium Germanicum* digitization project and its scan/XML layout, but the pipeline design (OCR → rough mapping → manual disambiguation → fuzzy matching → manual review → XML enrichment → audit) generalizes to other scanned reference works with structured, numbered entries.
+`rgpage.py` is self-contained: it reads the scans and the RG XML directly, runs
+Tesseract, and writes both tables and annotated images. It does **not** depend
+on the old debug tables in `legacy/`.
+
+## Commands
+
+```bash
+# OCR every scan and build the page/block tables
+python rgpage.py run --vol 8
+
+# same, with the EasyOCR safety net and a live OpenCV window
+python rgpage.py run --vol 8 --easyocr --show
+
+# only OCR and cache, no matching
+python rgpage.py scan --vol 8
+
+# rebuild tables from an existing cache (fast, no OCR)
+python rgpage.py match --vol 8
+
+# 20 random annotated pages from the cache
+python rgpage.py match --vol 8 --random 20 --seed 42
+
+# a small trial run: first 20 scans
+python rgpage.py run --vol 8 --limit 20 --random 5
+```
+
+After `run` and `match` the **review panel opens automatically** in the
+browser. It is the single interface: click **▶ Run OCR** to run the OCR from the
+web, watch the live prediction, see the pages that need review, and correct
+block / position / status / score (saved to `output/rgN_review.json`). Use
+`--no-review` to skip it, or open it later on its own:
+
+```bash
+python rgpage.py review --vol 8        # open the panel (no re-run)
+```
+
+Defaults: images in `H4 6481 (8,1`, XML in `../RG_data/rg_xml/rg8.xml`,
+first scan `71` = printed page `1`, cache in `debug/rg8/ocr_pages.jsonl`,
+outputs in `output/`.
+
+Useful options:
+
+| Option | Meaning |
+|---|---|
+| `--from-scan N`, `--to-scan N`, `--limit N` | restrict the scan range |
+| `--rebuild` | ignore the OCR cache and scan again |
+| `--easyocr` | enable the optional EasyOCR fallback |
+| `--show` | show the live annotated frame in an OpenCV window (ESC quits) |
+| `--delay MS` | delay between live frames |
+| `--random N`, `--seed N` | number of annotated samples and random seed |
+| `--live-dir DIR` | where `latest.jpg` / `recent.jpg` are written |
+| `--pages-out`, `--blocks-out`, `--images-out` | override output paths |
+| `--no-review` | don't open the review panel after `run` / `match` |
+| `--port N` | port for the review panel (default 5000) |
+
+## Outputs
+
+For `--vol 8`:
+
+| File | Contents |
+|---|---|
+| `output/rg8_pages.tsv` | One row per scan: `page`, `scan`, `page_source`, `entries_on_page`, `last_entry`, `last_block`, `last_kind`, `position`, `position_en`, `span_start`, `span_end`, `status`, `score`, `overridden`, `ocr_last_lines`. |
+| `output/rg8_blocks.tsv` | One row per `head`/`regest`: `entry`, `block_id`, `label`, `kind`, `page_start`, `page_end`, `pages`, `status` (`complete` / `continues`), `source`, `warning`. |
+| `output/rg8_live/latest.jpg` | Most recent annotated scan (updated during `run`). |
+| `output/rg8_live/recent.jpg` | Last few annotated scans in a strip. |
+| `output/rg8_randomN/` | Annotated samples and `contact_sheet.jpg`. |
+| `output/rg8_review.json` | Manual review overrides saved by the web app. |
+| `output/rg8_pages_reviewed.tsv` | Written by the web app's `/export`: TSV + overrides. |
+| `output/rg8_report.tsv` | Written by the web app's `/download/report`: per-block `entry`, `block_id`, `kind`, `page_start`, `page_end`, `span`, `conf`, `overridden`. |
+
+Annotation colors:
+
+- **green** = printed page number;
+- **blue** = margin entry number;
+- **orange** = last printed lines used for matching;
+- **red** = the matched last block.
+
+The black panel shows scan, page, entries on the page, last block/label,
+position and score. The review panel is in English; the position dropdown is a
+binary choice: **continues** (the block runs on to the next page) or
+**ends here** (it stops on this page). The underlying values remain
+`starts-here`, `continues`, `ends-here`, `complete-on-page`.
 
 ## How it works
 
-The pipeline runs in five sequential stages. Each stage reads the outputs of the previous one and writes its own intermediate report, so you can inspect, fix, or re-run any single stage without redoing the whole pipeline.
+1. **Page number.** Tesseract reads the page once; candidate page numbers are
+   isolated in the bottom/top centre strip. The scan sequence is then
+   normalized against `first_scan`/`first_page`, including gaps such as the
+   missing scans 544–545, so a misread digit does not shift later pages.
+2. **Entry numbers on the page.** Each column is split at the gutter and the
+   margin strip is OCRed (PSM 6, then PSM 11 / lower confidence as fallback).
+   A number is kept only if it exists in the XML and its nearby text looks like
+   a name, not an archive reference. A per-page median filter removes outliers;
+   same-page and neighbouring-page gaps are filled.
+3. **Last block.** The right column is OCRed, handwriting-sized/low-confidence
+   lines are dropped, and the last two printed lines are compared with the
+   `<head>` / `<regest>` texts of entries near this page using
+   `rapidfuzz.partial_ratio`. The alignment tells whether the OCR text sits at
+   the start (`starts-here`), end (`ends-here`), both (`complete-on-page`) or
+   middle (`continues`) of the block.
+4. **Spans.** Matched blocks become anchors. A block's span starts at its first
+   matched page and is extended forward by one page only when it
+   `continues`/`starts-here`; it is never extended backwards. Unmatched blocks
+   are inferred from their entry page. Spans are forced to be monotonic and
+   truncated if they exceed six pages.
+5. **EasyOCR fallback.** With `--easyocr`, EasyOCR runs only on the bottom 40%
+   of pages whose Tesseract score is below 55. Its result replaces the
+   Tesseract match only if it is more than 5 points better.
+6. **Blank pages.** A page with mean OCR confidence below 50 and no margin
+   entries is marked `blank-page`.
 
-```
-scans (images) ─┐
-                 ├─► Stage 1 ─► Stage 2 ─► Stage 3 ─► Stage 4 ─► Stage 5
-source XML ──────┘   (auto)     (manual)   (auto)      (auto)    (audit)
-                                            + Stage 3   
-                                              review
-                                              (manual)
-```
-
-| Stage | Script | Mode | Purpose |
-|---|---|---|---|
-| 1 | `stage1_build_page_mapping.py` | Automatic | OCRs every scan to read the printed page number and the entry numbers in the margin. Produces a rough **entry → page** mapping, cleans obvious OCR errors, infers missing entries that fall between two known entries on the *same* page, and flags entries that are ambiguous between two *different* pages. |
-| 2 | `stage2_review_ambiguous_mapping.py` | Manual | For every entry flagged as ambiguous in Stage 1, shows the two candidate page scans side by side so you can pick A, B, or skip. Updates the mapping in place. |
-| 2b | `stage2b_manual_entry_override.py` | Manual | Lets you manually override/correct specific entry→page assignments that Stage 1/2 got wrong. |
-| 3 | `stage3_locate_sublemmas.py` | Automatic (+ optional manual review) | OCRs the last 1–2 lines of the right column of each page and fuzzy-matches them against every `<head>`/`<sublemma>` text in the XML, using the Stage 1+2 mapping to narrow down candidates. Run with `--review` to manually confirm/correct matches against the scan image and text diff. |
-| 3b | `stage3b_manual_sublemma_override.py` | Manual | Manual correction pass for individual sublemma matches. |
-| 4 | `stage4_build_enriched_xml.py` | Automatic | Reconstructs `page_start`/`page_end` for every `<head>`/`<sublemma>` block from the per-page anchors produced in Stage 3, and writes the **one** final enriched XML output. |
-| 5 | `stage5_check_enriched_xml.py` | Automatic | Audits the enriched XML: reports heads/sublemmas missing `page_start`/`page_end`, suspiciously long spans, and other inconsistencies. |
-
-
-Additional helper modules:
-
-- **`interactive_display.py`** — shared UI helpers used by the manual review stages (Stage 2, Stage 3 `--review`, Stage 2b, Stage 3b) to display scan images and let you make decisions interactively.
-- **`pipeline_config.py`** — the single source of truth for every path and shared constant used across the whole pipeline. Every `stageN_*.py` script imports its configuration from here.
-- **`debug/`** — output directory for intermediate TSV/JSON reports generated by every stage (mappings, ambiguous entries, OCR debug images, span warnings, etc.).
-- **`xml_check/`** — output directory for the Stage 5 audit reports.
+Runtime on the development Mac is about 5 s per scan (roughly 70 minutes for
+839 scans). OCR results are cached after every 10 scans, so an interrupted
+`run` can be resumed; `match` reuses the cache and takes seconds.
 
 ## Requirements
 
 - Python 3.9+
-- [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) installed on your system (the pipeline calls it via `pytesseract`)
+- Tesseract (`brew install tesseract`)
 - Python packages:
-  - `opencv-python`
-  - `numpy`
-  - `pytesseract`
-  - `Pillow`
-
-Install the Python dependencies with:
 
 ```bash
-pip install opencv-python numpy pytesseract Pillow
+pip install opencv-python numpy pytesseract Pillow rapidfuzz
+# optional, only for --easyocr:
+pip install easyocr
 ```
 
-Then install Tesseract itself:
+## Code map
 
-- **Windows:** download and install from the [Tesseract at UB Mannheim builds](https://github.com/UB-Mannheim/tesseract/wiki), then point `TESSERACT_CMD` (see below) to `tesseract.exe`.
-- **macOS:** `brew install tesseract`
-- **Linux:** `sudo apt install tesseract-ocr`
-
-## Configuration
-
-Before running anything, edit the paths and constants at the top of **`pipeline_config.py`** to match your environment:
-
-| Constant | Description |
+| File | Purpose |
 |---|---|
-| `TESSERACT_CMD` | Full path to the Tesseract executable. |
-| `BASE_DIR` | Base working directory where debug output and the final XML are written. |
-| `IMAGE_DIR` | Directory containing the page scan images. |
-| `XML_INPUT` | Path to the original, unmodified source XML. Every stage reads from this — never from the output. |
-| `XML_OUTPUT` | Path to the single enriched XML this pipeline produces. |
-| `DEBUG_DIR` | Directory where all intermediate TSV/JSON reports are written (defaults to `debug/` under `BASE_DIR`). |
-| `IMAGE_EXTENSIONS` | Accepted scan file extensions (`.jpg`, `.jpeg`, `.png`, `.tif`, `.tiff` by default). |
-| `FIRST_SCAN_NO` / `FIRST_LOGICAL_PAGE` | Offsets used to align physical scan numbering with the book's printed logical page numbers. |
+| `rgpage.py` | The self-contained page/block locator and annotator. |
+| `review_app.py` | The web review panel (review/correct/export) served by `rgpage.py review`. |
+| `rg_xml.py` | Schema-aware XML reader (`<petentenvita>/<head>/<regest>`, legacy `<lemma>/<sublemma>`, milestone regests). |
+| `imaging.py` | Image loading and deskew helpers. |
+| `legacy/` | Archived five-stage pipeline. Not used by `rgpage.py`. See `legacy/README.md`. |
 
-All other paths (mapping TSVs, match TSVs, span reports, audit output, etc.) are derived automatically from `BASE_DIR` / `DEBUG_DIR` and don't need to be edited individually.
+## RG XML model
 
-## Usage
+Each volume is one file with `<petentenvita>` containers, each holding a
+`<head>` and one or more `<regest>` elements:
 
-Run the stages in order from the repository root:
-
-```bash
-# Stage 1 — build the rough entry -> page mapping from OCR
-python stage1_build_page_mapping.py
-
-# Optional flags:
-python stage1_build_page_mapping.py --rebuild     # force re-OCR, ignore cache
-python stage1_build_page_mapping.py --test 80      # process only the first 80 scans (for testing)
+```xml
+<rg vol="8">
+  <petentenvita id="10800001">
+    <head id="10800001-0">…</head>
+    <regest id="10800001-1">…</regest>
+    <regest id="10800001-2">…</regest>
+  </petentenvita>
+</rg>
 ```
 
-```bash
-# Stage 2 — manually resolve entries ambiguous between two pages
-python stage2_review_ambiguous_mapping.py
-```
-
-```bash
-# Stage 2b — manually override specific entry -> page assignments (as needed)
-python stage2b_manual_entry_override.py
-```
-
-```bash
-# Stage 3 — fuzzy-match OCR'd page text against XML heads/sublemmas
-python stage3_locate_sublemmas.py
-
-# With manual review of every match against the scan + text diff:
-python stage3_locate_sublemmas.py --review
-```
-
-```bash
-# Stage 3b — manually correct individual sublemma matches (as needed)
-python stage3b_manual_sublemma_override.py
-```
-
-```bash
-# Stage 4 — reconstruct page_start/page_end and write the final enriched XML
-python stage4_build_enriched_xml.py
-```
-
-```bash
-# Stage 5 — audit the enriched XML for missing/suspicious spans
-python stage5_check_enriched_xml.py
-```
-
-After Stage 4, the only enriched XML file (`XML_OUTPUT`) contains `page_start`/`page_end` attributes for every `<head>`/`<sublemma>` element that the pipeline could resolve. Run Stage 5 to check what still needs attention before treating the output as final.
-
-## Output overview
-
-| Output | Produced by | Description |
-|---|---|---|
-| `MAPPING_TSV` | Stage 1 / 2 | Final entry → page mapping. |
-| `AMBIGUOUS_MAPPING_TSV` | Stage 1 | Entries ambiguous between two candidate pages, pending Stage 2 review. |
-| `SCAN_REPORT_TSV` | Stage 1 | Per-scan OCR debug info (raw vs. cleaned page number/entries, notes). |
-| `MATCHES_TSV` | Stage 3 | Raw fuzzy-matched sublemma/head candidates per page. |
-| `MATCHES_REVIEWED_TSV` | Stage 3 (`--review`) | Matches after manual confirmation. |
-| `SPANS_TSV` / `MULTIPAGE_SPANS_TSV` | Stage 4 | Reconstructed page spans, including entries spanning multiple pages. |
-| `SPAN_WARNINGS_TSV` | Stage 4 | Spans that look suspiciously long or otherwise anomalous. |
-| `XML_OUTPUT` | Stage 4 | The final enriched XML — the sole output of the entire pipeline. |
-| `XML_CHECK_DIR/*.tsv` | Stage 5 | Audit reports on the enriched XML (missing spans, anomalies). |
-
-## Project structure
-
-```
-RGpageparser/
-├── pipeline_config.py                    # Shared paths and constants
-├── stage1_build_page_mapping.py          # Stage 1: OCR scans -> rough entry/page mapping
-├── stage2_review_ambiguous_mapping.py    # Stage 2: manual disambiguation
-├── stage2b_manual_entry_override.py      # Stage 2b: manual mapping overrides
-├── stage3_locate_sublemmas.py            # Stage 3: fuzzy-match OCR text to XML entries
-├── stage3b_manual_sublemma_override.py   # Stage 3b: manual match overrides
-├── stage4_build_enriched_xml.py          # Stage 4: write the final enriched XML
-├── stage5_check_enriched_xml.py          # Stage 5: audit the enriched XML
-├── interactive_display.py                # Shared helpers for manual review UIs
-├── debug/                                # Intermediate reports (generated)
-└── xml_check/                            # Audit reports + xml file(generated)
-```
+The entry number is `id[3:]` (`10800001` → entry `1`). Blocks are labelled
+`head`, `rg1`, `rg2`, … according to the suffix. Milestone regests
+(`<regest milestone="start" id="ov2"/>`) are supported by `rg_xml.py`.

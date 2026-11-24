@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.tmp.xml
+
+debug/
+output/
+scans/

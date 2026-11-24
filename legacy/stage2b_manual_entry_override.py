@@ -35,8 +35,8 @@ Two independent modes
      - type 'list' to reprint the entries currently mapped to this page
      - type 'q' to finish this page
 
-Both modes write directly into MAPPING_TSV (upsert) and log every manual
-decision to MANUAL_MAPPING_OVERRIDES_TSV for traceability.
+Both modes write directly into CFG.mapping_tsv (upsert) and log every manual
+decision to CFG.manual_mapping_overrides_tsv for traceability.
 
 Usage
 -----
@@ -46,26 +46,21 @@ Usage
 """
 
 import argparse
-import csv
+import sys
 import re
-from pathlib import Path
 from typing import Optional
 import cv2
 
-from pipeline_config import (
-    IMAGE_DIR,
-    DEBUG_DIR,
-    MAPPING_TSV,
-    SCAN_REPORT_TSV,
-)
+from imaging import load_display_image
+from pipeline_config import CFG, add_common_args, configure_from_args
 
-# Reuse image-loading/display helpers already written in stage2.
+# Reuse the loader/display helpers already written in stage2.
 from stage2_review_ambiguous_mapping import (
-    load_display_image,
+    load_mapping_tsv,
     make_side_by_side,
+    read_scan_report_page_to_image,
+    save_mapping_tsv,
 )
-
-MANUAL_MAPPING_OVERRIDES_TSV = DEBUG_DIR / "manual_mapping_overrides.tsv"
 
 _WINDOW_NAME = "manual-entry-override"
 _window_open = False
@@ -120,53 +115,10 @@ def close_display() -> None:
         _window_open = False
 # ── Data loading ──────────────────────────────────────────────────────────────
 
-def read_scan_report_page_to_image() -> dict[int, str]:
-    if not SCAN_REPORT_TSV.exists():
-        raise FileNotFoundError(f"Missing scan report: {SCAN_REPORT_TSV}. Run stage1 first.")
-
-    page_to_image: dict[int, str] = {}
-    with open(SCAN_REPORT_TSV, "r", encoding="utf-8") as f:
-        reader = csv.DictReader(f, delimiter="\t")
-        for row in reader:
-            filename = row.get("filename", "").strip()
-            final_page = row.get("final_page", "").strip()
-            if not filename or not final_page or final_page == "None":
-                continue
-            try:
-                page = int(final_page)
-            except Exception:
-                continue
-            page_to_image.setdefault(page, filename)
-    return page_to_image
-
-
-def load_mapping_tsv(path: Path) -> dict[int, int]:
-    mapping: dict[int, int] = {}
-    if not path.exists():
-        return mapping
-    with open(path, "r", encoding="utf-8") as f:
-        reader = csv.DictReader(f, delimiter="\t")
-        for row in reader:
-            entry_raw = row.get("entry", "").strip()
-            page_raw = row.get("page", "").strip()
-            if not entry_raw or not page_raw:
-                continue
-            mapping[int(entry_raw)] = int(page_raw)
-    return mapping
-
-
-def save_mapping_tsv(path: Path, mapping: dict[int, int]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("entry\tpage\n")
-        for entry, page in sorted(mapping.items()):
-            f.write(f"{entry}\t{page}\n")
-
-
 def append_manual_log(entry: int, page: Optional[int], note: str) -> None:
-    DEBUG_DIR.mkdir(parents=True, exist_ok=True)
-    exists = MANUAL_MAPPING_OVERRIDES_TSV.exists()
-    with open(MANUAL_MAPPING_OVERRIDES_TSV, "a", encoding="utf-8") as f:
+    CFG.debug_dir.mkdir(parents=True, exist_ok=True)
+    exists = CFG.manual_mapping_overrides_tsv.exists()
+    with open(CFG.manual_mapping_overrides_tsv, "a", encoding="utf-8") as f:
         if not exists:
             f.write("entry\tpage\tnote\n")
         f.write(f"{entry}\t{page if page is not None else ''}\t{note}\n")
@@ -182,7 +134,7 @@ def find_neighbors(entry: int, mapping: dict[int, int]) -> tuple[Optional[int], 
 # ── Entry-lookup mode (original) ──────────────────────────────────────────────
 
 def run_interactive() -> None:
-    mapping = load_mapping_tsv(MAPPING_TSV)
+    mapping = load_mapping_tsv(CFG.mapping_tsv)
     page_to_image = read_scan_report_page_to_image()
 
     print("\n=== MANUAL ENTRY -> PAGE OVERRIDE ===")
@@ -219,13 +171,13 @@ def run_interactive() -> None:
         header_lines = [f"Looking up entry {entry}"]
 
         if left_page is not None and left_page in page_to_image:
-            img_a_path = IMAGE_DIR / page_to_image[left_page]
+            img_a_path = CFG.image_dir / page_to_image[left_page]
             if img_a_path.exists():
                 img_a = load_display_image(img_a_path)
                 header_lines.append(f"A: page {left_page} (entry {left_entry}), {img_a_path.name}")
 
         if right_page is not None and right_page in page_to_image:
-            img_b_path = IMAGE_DIR / page_to_image[right_page]
+            img_b_path = CFG.image_dir / page_to_image[right_page]
             if img_b_path.exists():
                 img_b = load_display_image(img_b_path)
                 header_lines.append(f"B: page {right_page} (entry {right_entry}), {img_b_path.name}")
@@ -252,19 +204,19 @@ def run_interactive() -> None:
 
         page = int(page_raw)
         mapping[entry] = page
-        save_mapping_tsv(MAPPING_TSV, mapping)
+        save_mapping_tsv(CFG.mapping_tsv, mapping)
         append_manual_log(entry, page, "manual interactive (entry lookup)")
         print(f"Saved: entry {entry} -> page {page}")
 
     close_display()
-    print(f"\nMAPPING_TSV updated -> {MAPPING_TSV}")
+    print(f"\nMAPPING_TSV updated -> {CFG.mapping_tsv}")
 
 
 def run_direct(entry: int, page: int) -> None:
-    mapping = load_mapping_tsv(MAPPING_TSV)
+    mapping = load_mapping_tsv(CFG.mapping_tsv)
     old = mapping.get(entry)
     mapping[entry] = page
-    save_mapping_tsv(MAPPING_TSV, mapping)
+    save_mapping_tsv(CFG.mapping_tsv, mapping)
     append_manual_log(entry, page, "manual direct (--entry/--page)")
 
     if old is None:
@@ -274,7 +226,7 @@ def run_direct(entry: int, page: int) -> None:
     else:
         print(f"Entry {entry} was already page {page}, no change.")
 
-    print(f"MAPPING_TSV updated -> {MAPPING_TSV}")
+    print(f"CFG.mapping_tsv updated -> {CFG.mapping_tsv}")
 
 
 # ── Page mode (new) ────────────────────────────────────────────────────────────
@@ -307,16 +259,16 @@ def parse_entry_tokens(raw: str) -> tuple[list[int], list[int]]:
 
 
 def run_page_mode(page: int) -> None:
-    mapping = load_mapping_tsv(MAPPING_TSV)
+    mapping = load_mapping_tsv(CFG.mapping_tsv)
     page_to_image = read_scan_report_page_to_image()
 
     image_name = page_to_image.get(page)
 
     if not image_name:
-        print(f"ERROR: no scan image found for page {page} in {SCAN_REPORT_TSV}.")
+        print(f"ERROR: no scan image found for page {page} in {CFG.scan_report_tsv}.")
         return
 
-    image_path = IMAGE_DIR / image_name
+    image_path = CFG.image_dir / image_name
 
     if not image_path.exists():
         print(f"ERROR: image file does not exist: {image_path}")
@@ -382,16 +334,16 @@ def run_page_mode(page: int) -> None:
                 print(f"  entry {entry} already on page {page}, no change")
 
         if to_add or to_remove:
-            save_mapping_tsv(MAPPING_TSV, mapping)
+            save_mapping_tsv(CFG.mapping_tsv, mapping)
             show_current_page()
 
     close_display()
-    print(f"\nMAPPING_TSV updated -> {MAPPING_TSV}")
+    print(f"\nMAPPING_TSV updated -> {CFG.mapping_tsv}")
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
-def main() -> int:
+def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--entry", type=int, default=None,
                          help="Entry-lookup mode: entry number to set directly.")
@@ -399,7 +351,9 @@ def main() -> int:
                          help="Page mode: show this page and edit its entries. "
                               "If used together with --entry, sets that single "
                               "entry -> page directly (same as before).")
-    args = parser.parse_args()
+    add_common_args(parser)
+    args = parser.parse_args(argv[1:] if argv is not None else None)
+    configure_from_args(args)
 
     if args.entry is not None and args.page is not None:
         run_direct(args.entry, args.page)
@@ -412,4 +366,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv))

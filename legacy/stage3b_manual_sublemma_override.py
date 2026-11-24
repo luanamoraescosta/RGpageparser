@@ -8,14 +8,14 @@ Manual, image-assisted tool to fix individual pages in the sublemma
 matches TSVs that stage3's automatic/interactive review left unresolved
 (low-score, ambiguous, ocr-too-short, or skipped with 's').
 
-Always merges the freshest full run (MATCHES_TSV) with any previously
-reviewed decisions (MATCHES_REVIEWED_TSV), so pages from a newer/bigger
+Always merges the freshest full run (CFG.matches_tsv) with any previously
+reviewed decisions (CFG.matches_reviewed_tsv), so pages from a newer/bigger
 run are never hidden behind an older/smaller reviewed file.
 
 For a given page it shows the actual scan (with the OCR last-lines
 highlighted, same as stage3's review), lets you filter candidates by
 entry number, and set the sub_id directly. Upserts that single row and
-writes the result back to MATCHES_REVIEWED_TSV, plus logs the decision to
+writes the result back to CFG.matches_reviewed_tsv, plus logs the decision to
 MANUAL_CORRECTIONS_TSV, same as stage3's own interactive review does.
 
 Image display uses interactive_display.py (matplotlib/Tkinter-based)
@@ -42,16 +42,14 @@ Usage
 """
 
 import argparse
+import sys
 import csv
 from pathlib import Path
 from typing import Optional
 
-from pipeline_config import (
-    IMAGE_DIR,
-    XML_INPUT,
-    MATCHES_REVIEWED_TSV,
-    MATCHES_TSV,
-)
+import pytesseract
+
+from pipeline_config import CFG, add_common_args, configure_from_args
 
 from interactive_display import show_image, close_display, pump_events
 
@@ -129,31 +127,31 @@ def load_matches_tsv(path: Path) -> list[PageMatch]:
 
 def load_merged_matches() -> list[PageMatch]:
     """
-    Always start from MATCHES_TSV (the freshest, complete run -- e.g. all
-    839 pages), then overlay any rows from MATCHES_REVIEWED_TSV (which may
+    Always start from CFG.matches_tsv (the freshest, complete run -- e.g. all
+    839 pages), then overlay any rows from CFG.matches_reviewed_tsv (which may
     be from an older/partial run, e.g. --test100 --review) ON TOP, keyed
     by page number.
 
     This makes sure:
-      - pages that only exist in the fresh MATCHES_TSV (never seen by an
+      - pages that only exist in the fresh CFG.matches_tsv (never seen by an
         older reviewed file) are still included and correctly flagged as
         unresolved if their status != "ok".
       - pages that WERE already manually reviewed in an older
-        MATCHES_REVIEWED_TSV keep their manual decision instead of being
+        CFG.matches_reviewed_tsv keep their manual decision instead of being
         reset to the automatic one.
     """
-    if not MATCHES_TSV.exists():
+    if not CFG.matches_tsv.exists():
         raise FileNotFoundError(
-            f"{MATCHES_TSV} not found. Run stage3_locate_sublemmas.py first."
+            f"{CFG.matches_tsv} not found. Run stage3_locate_sublemmas.py first."
         )
 
-    print(f"Base (freshest) matches: {MATCHES_TSV}")
-    base_matches = load_matches_tsv(MATCHES_TSV)
+    print(f"Base (freshest) matches: {CFG.matches_tsv}")
+    base_matches = load_matches_tsv(CFG.matches_tsv)
     by_page: dict[int, PageMatch] = {m.page: m for m in base_matches}
 
-    if MATCHES_REVIEWED_TSV.exists():
-        print(f"Overlaying previously reviewed rows from: {MATCHES_REVIEWED_TSV}")
-        reviewed_matches = load_matches_tsv(MATCHES_REVIEWED_TSV)
+    if CFG.matches_reviewed_tsv.exists():
+        print(f"Overlaying previously reviewed rows from: {CFG.matches_reviewed_tsv}")
+        reviewed_matches = load_matches_tsv(CFG.matches_reviewed_tsv)
 
         overlaid = 0
         skipped_stale = 0
@@ -172,7 +170,7 @@ def load_merged_matches() -> list[PageMatch]:
         print(f"  applied manual/reviewed overrides: {overlaid}")
         print(f"  ignored stale non-reviewed rows   : {skipped_stale}")
     else:
-        print("No reviewed file found yet -- starting fresh from MATCHES_TSV only.")
+        print("No reviewed file found yet -- starting fresh from CFG.matches_tsv only.")
 
     merged = sorted(by_page.values(), key=lambda m: m.page)
     print(f"Total merged pages: {len(merged)}")
@@ -190,7 +188,7 @@ def upsert_match(matches: list[PageMatch], updated: PageMatch) -> list[PageMatch
 # ── Build a scan_to_path lookup for any page ──────────────────────────────────
 
 def build_scan_to_path() -> dict[str, Path]:
-    paths = ordered_scan_paths(IMAGE_DIR, limit=None)
+    paths = ordered_scan_paths(CFG.image_dir, limit=None)
     return {p.name: p for p in paths}
 
 
@@ -316,13 +314,16 @@ def resolve_page(match: PageMatch, sublemmas: list[SublemmaDoc], top_n: int = 15
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def main() -> int:
+def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--page", type=int, default=None,
                          help="Jump straight to this page.")
     parser.add_argument("--queue-unresolved", action="store_true",
                          help="Go through every page with status != 'ok' and not yet reviewed.")
-    args = parser.parse_args()
+    add_common_args(parser)
+    args = parser.parse_args(argv[1:] if argv is not None else None)
+    configure_from_args(args)
+    pytesseract.pytesseract.tesseract_cmd = CFG.tesseract_cmd
 
     matches = load_merged_matches()
 
@@ -330,8 +331,8 @@ def main() -> int:
         print("No matches loaded. Nothing to do.")
         return 1
 
-    print(f"Loading XML sublemmas: {XML_INPUT}")
-    sublemmas = load_sublemmas(XML_INPUT)
+    print(f"Loading XML sublemmas: {CFG.xml_input}")
+    sublemmas = load_sublemmas(CFG.xml_input)
     print(f"Candidate docs loaded: {len(sublemmas)}")
 
     scan_to_path = build_scan_to_path()
@@ -354,15 +355,15 @@ def main() -> int:
 
         if updated is not None:
             matches = upsert_match(matches, updated)
-            save_matches_report(matches, MATCHES_REVIEWED_TSV)
+            save_matches_report(matches, CFG.matches_reviewed_tsv)
         else:
             print(f"Skipped page {match.page}.")
 
     close_display()
-    print(f"\nMATCHES_REVIEWED_TSV updated -> {MATCHES_REVIEWED_TSV}")
+    print(f"\nMATCHES_REVIEWED_TSV updated -> {CFG.matches_reviewed_tsv}")
     print("Next: re-run stage4_build_enriched_xml.py --write-xml to apply changes.")
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv))

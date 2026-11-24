@@ -1,95 +1,256 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""
-pipeline_config.py
+"""Runtime configuration for the RG page parser.
 
-Single source of truth for every path and shared constant used across the
-whole RG8 pipeline. Every stageN_*.py script imports from here instead of
-redefining its own copies of BASE_DIR / XML_INPUT / etc.
+Every stage imports the shared ``CFG`` object and the CLI helpers below. Paths
+are no longer hard-coded: a volume is selected with ``--volume`` (or ``--xml``),
+everything else is derived from it and can be overridden on the command line
+or through ``RG_*`` environment variables.
 
-Pipeline overview
------------------
+Defaults assume the repository is checked out next to ``RG_data``::
 
-    stage1_build_page_mapping.py
-        OCR every scan: read the entry numbers printed in the margin and
-        the page number printed at top/bottom of the page.
-        -> MAPPING_TSV               (entry -> page, rough)
-        -> AMBIGUOUS_MAPPING_TSV     (entries ambiguous between two pages)
-
-    stage2_review_ambiguous_mapping.py   (manual, always shows images)
-        For every entry flagged as ambiguous in stage 1, show the two
-        candidate page scans side by side and let you pick A/B/skip.
-        -> MAPPING_TSV                (updated in place)
-
-    stage3_locate_sublemmas.py
-        OCR the last 1-2 lines of each page (right column), fuzzy-match
-        them against every <head>/<sublemma> text in the XML, using the
-        mapping from stage 1+2 to narrow down candidates.
-        -> MATCHES_TSV
-        --review flag (manual, always shows the scan image + text diff)
-        -> MATCHES_REVIEWED_TSV
-
-    stage4_build_enriched_xml.py
-        Reconstruct page_start/page_end for EVERY <head>/<sublemma> block
-        from the per-page anchors produced in stage 3, and write the ONE
-        final enriched XML.
-        -> XML_OUTPUT   <-- the only XML this pipeline writes
-
-    stage5_check_enriched_xml.py
-        Audit XML_OUTPUT: which heads/sublemmas are missing
-        page_start/page_end, spans that look suspiciously long, etc.
-        -> XML_CHECK_DIR/*.tsv
-
-Only ONE enriched XML is ever produced (XML_OUTPUT below). Nothing else in
-this pipeline should create a second XML file.
+    RGPARSER/
+    ├── RGpageparser/       (this repository)
+    └── RG_data/rg_xml/rg1.xml ... rg10.xml
 """
 
+from __future__ import annotations
+
+import argparse
+import os
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
-# ── Adjust these for your machine ─────────────────────────────────────────
+REPO_DIR = Path(__file__).resolve().parent
 
-TESSERACT_CMD = r"C:\Users\moraescosta1\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
+DEFAULT_IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".tif", ".tiff"})
 
-BASE_DIR = Path(r"W:\Hiwis\Luana\RGSPAGES\RG-Utils\notebooks\RG8")
 
-IMAGE_DIR = BASE_DIR / "H4 6481 (8,1"
+def _env_path(name: str) -> Optional[Path]:
+    raw = os.environ.get(name, "").strip()
+    return Path(raw).expanduser() if raw else None
 
-# The ORIGINAL, unmodified source XML. Every stage reads from this -- never
-# from XML_OUTPUT -- so re-running any stage always starts from the same
-# ground truth.
-XML_INPUT = Path(
-    r"C:\Users\moraescosta1\Downloads\RGpageparser-main\RGpageparser-main\rg8.xml"
+
+def _env_int(name: str) -> Optional[int]:
+    raw = os.environ.get(name, "").strip()
+    return int(raw) if raw.isdigit() else None
+
+
+def _detect_rg_data_dir() -> Path:
+    env = _env_path("RG_DATA_DIR")
+    if env:
+        return env
+    for candidate in (REPO_DIR.parent / "RG_data" / "rg_xml", REPO_DIR / "RG_data" / "rg_xml"):
+        if candidate.exists():
+            return candidate
+    return REPO_DIR.parent / "RG_data" / "rg_xml"
+
+
+def _detect_default_volume() -> Optional[int]:
+    for candidate in (REPO_DIR.parent / "H4 6481 (8,1", REPO_DIR / "H4 6481 (8,1"):
+        if candidate.is_dir():
+            return 8
+    return None
+
+
+def _volume_from_name(name: str) -> Optional[int]:
+    stem = Path(name).stem.lower()
+    if stem.startswith("rg") and stem[2:].isdigit():
+        return int(stem[2:])
+    digits = "".join(ch for ch in stem if ch.isdigit())
+    return int(digits) if digits else None
+
+
+@dataclass
+class Config:
+    volume: Optional[int] = None
+    base_dir: Optional[Path] = None
+    _images: Optional[Path] = None
+    _xml: Optional[Path] = None
+    _output: Optional[Path] = None
+    _debug: Optional[Path] = None
+    tesseract_cmd: str = "tesseract"
+    first_scan_no: int = 71
+    first_logical_page: int = 1
+    image_extensions: frozenset[str] = DEFAULT_IMAGE_EXTENSIONS
+    rg_data_dir: Path = _detect_rg_data_dir()
+
+    @property
+    def base(self) -> Path:
+        return self.base_dir or REPO_DIR
+
+    @property
+    def xml_input(self) -> Path:
+        if self._xml is not None:
+            return self._xml
+        if self.volume is None:
+            return self.rg_data_dir / "rg.xml"
+        return self.rg_data_dir / f"rg{self.volume}.xml"
+
+    @property
+    def image_dir(self) -> Path:
+        if self._images is not None:
+            return self._images
+        suffix = f"rg{self.volume}" if self.volume is not None else ""
+        candidates = [self.base / "scans" / suffix]
+        if self.volume == 8:
+            candidates += [
+                REPO_DIR.parent / "H4 6481 (8,1",
+                self.base / "H4 6481 (8,1",
+            ]
+        for candidate in candidates:
+            if candidate.is_dir():
+                return candidate
+        return candidates[0]
+
+    @property
+    def debug_dir(self) -> Path:
+        if self._debug is not None:
+            return self._debug
+        suffix = f"rg{self.volume}" if self.volume is not None else ""
+        return self.base / "debug" / suffix
+
+    @property
+    def xml_output(self) -> Path:
+        if self._output is not None:
+            return self._output
+        suffix = f"rg{self.volume}" if self.volume is not None else ""
+        return self.base / "output" / f"{suffix}_enriched_pages.xml"
+
+    @property
+    def xml_check_dir(self) -> Path:
+        return self.debug_dir / "xml_check"
+
+    @property
+    def mapping_tsv(self) -> Path:
+        return self.debug_dir / "entry_to_page_report.tsv"
+
+    @property
+    def ambiguous_mapping_tsv(self) -> Path:
+        return self.debug_dir / "ambiguous_missing_between_pages.tsv"
+
+    @property
+    def scan_report_tsv(self) -> Path:
+        return self.debug_dir / "scan_report.tsv"
+
+    @property
+    def mapping_resolutions_json(self) -> Path:
+        return self.debug_dir / "manual_mapping_resolutions.json"
+
+    @property
+    def review_resolved_tsv(self) -> Path:
+        return self.debug_dir / "review_resolved_missing.tsv"
+
+    @property
+    def review_unsure_tsv(self) -> Path:
+        return self.debug_dir / "review_unsure_missing.tsv"
+
+    @property
+    def mapping_cache(self) -> Path:
+        return self.debug_dir / "page_mapping.json"
+
+    @property
+    def manual_mapping_overrides_tsv(self) -> Path:
+        return self.debug_dir / "manual_mapping_overrides.tsv"
+
+    @property
+    def matches_tsv(self) -> Path:
+        return self.debug_dir / "lastline_block_matches.tsv"
+
+    @property
+    def matches_reviewed_tsv(self) -> Path:
+        return self.debug_dir / "lastline_block_matches_reviewed.tsv"
+
+    @property
+    def manual_corrections_tsv(self) -> Path:
+        return self.debug_dir / "manual_block_corrections.tsv"
+
+    @property
+    def debug_img_dir(self) -> Path:
+        return self.debug_dir / "ocr_lastline_debug_images"
+
+    @property
+    def spans_tsv(self) -> Path:
+        return self.debug_dir / "block_page_spans.tsv"
+
+    @property
+    def multipage_spans_tsv(self) -> Path:
+        return self.debug_dir / "block_multipage_spans.tsv"
+
+    @property
+    def span_warnings_tsv(self) -> Path:
+        return self.debug_dir / "block_span_warnings.tsv"
+
+
+CFG = Config(
+    volume=_env_int("RG_VOLUME"),
+    base_dir=_env_path("RG_BASE_DIR"),
+    _images=_env_path("RG_IMAGES"),
+    _xml=_env_path("RG_XML"),
+    _output=_env_path("RG_OUTPUT"),
+    _debug=_env_path("RG_DEBUG_DIR"),
+    tesseract_cmd=os.environ.get("RG_TESSERACT", "tesseract"),
+    first_scan_no=_env_int("RG_FIRST_SCAN_NO") or 71,
+    first_logical_page=_env_int("RG_FIRST_LOGICAL_PAGE") or 1,
+    rg_data_dir=_detect_rg_data_dir(),
 )
 
-# The ONE final enriched XML this whole pipeline produces.
-XML_OUTPUT = BASE_DIR / "rg8_enriched_pages_sublemma.xml"
 
-DEBUG_DIR = BASE_DIR / "debug"
+def add_common_args(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_argument_group("RG paths")
+    group.add_argument("--volume", type=int, default=None,
+                       help="RG volume number (selects rgN.xml under RG_data/rg_xml).")
+    group.add_argument("--xml", type=Path, default=None,
+                       help="Explicit source XML (overrides --volume).")
+    group.add_argument("--images", type=Path, default=None,
+                       help="Directory containing the page scans.")
+    group.add_argument("--base-dir", type=Path, default=None,
+                       help="Working directory for debug/output folders.")
+    group.add_argument("--debug-dir", type=Path, default=None,
+                       help="Explicit directory for intermediate reports.")
+    group.add_argument("--output", type=Path, default=None,
+                       help="Explicit enriched XML output path.")
+    group.add_argument("--tesseract", default=None,
+                       help="Path to the tesseract executable.")
+    group.add_argument("--first-scan-no", type=int, default=None,
+                       help="Physical number of the first scan to process.")
+    group.add_argument("--first-logical-page", type=int, default=None,
+                       help="Printed page number of the first processed scan.")
 
-# ── Stage 1+2 outputs: entry -> page rough mapping ────────────────────────
-MAPPING_TSV = DEBUG_DIR / "entry_to_page_report.tsv"
-AMBIGUOUS_MAPPING_TSV = DEBUG_DIR / "ambiguous_missing_between_pages.tsv"
-SCAN_REPORT_TSV = DEBUG_DIR / "scan_report.tsv"
-MAPPING_RESOLUTIONS_JSON = DEBUG_DIR / "manual_mapping_resolutions.json"
-REVIEW_RESOLVED_TSV = DEBUG_DIR / "review_resolved_missing.tsv"
-REVIEW_UNSURE_TSV = DEBUG_DIR / "review_unsure_missing.tsv"
 
-# ── Stage 3 outputs: per-page sublemma/head matches ───────────────────────
-MATCHES_TSV = DEBUG_DIR / "lastline_sublemma_matches.tsv"
-MATCHES_REVIEWED_TSV = DEBUG_DIR / "lastline_sublemma_matches_reviewed.tsv"
-MANUAL_CORRECTIONS_TSV = DEBUG_DIR / "manual_sublemma_corrections.tsv"
-DEBUG_IMG_DIR = DEBUG_DIR / "ocr_lastline_debug_images"
+def configure_from_args(args: argparse.Namespace) -> Config:
+    volume = getattr(args, "volume", None)
+    xml = getattr(args, "xml", None)
+    images = getattr(args, "images", None)
+    base_dir = getattr(args, "base_dir", None)
+    debug_dir = getattr(args, "debug_dir", None)
+    output = getattr(args, "output", None)
+    tesseract = getattr(args, "tesseract", None)
+    first_scan_no = getattr(args, "first_scan_no", None)
+    first_logical_page = getattr(args, "first_logical_page", None)
 
-# ── Stage 4 outputs: reconstructed spans ──────────────────────────────────
-SPANS_TSV = DEBUG_DIR / "sublemma_page_spans.tsv"
-MULTIPAGE_SPANS_TSV = DEBUG_DIR / "sublemma_multipage_spans.tsv"
-SPAN_WARNINGS_TSV = DEBUG_DIR / "sublemma_span_warnings.tsv"
-
-# ── Stage 5 output ─────────────────────────────────────────────────────────
-XML_CHECK_DIR = DEBUG_DIR / "xml_check"
-
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
-
-FIRST_SCAN_NO = 71
-FIRST_LOGICAL_PAGE = 1
+    if xml is not None:
+        CFG._xml = xml.expanduser()
+        if volume is None:
+            volume = _volume_from_name(xml.name)
+    if volume is None and xml is None and CFG.volume is None:
+        volume = _detect_default_volume()
+    if volume is not None:
+        CFG.volume = volume
+    if images is not None:
+        CFG._images = images.expanduser()
+    if base_dir is not None:
+        CFG.base_dir = base_dir.expanduser()
+    if debug_dir is not None:
+        CFG._debug = debug_dir.expanduser()
+    if output is not None:
+        CFG._output = output.expanduser()
+    if tesseract is not None:
+        CFG.tesseract_cmd = tesseract
+    if first_scan_no is not None:
+        CFG.first_scan_no = first_scan_no
+    if first_logical_page is not None:
+        CFG.first_logical_page = first_logical_page
+    return CFG
