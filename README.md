@@ -11,6 +11,26 @@ For each page scan of a *Repertorium Germanicum* volume, answer two questions:
 Tesseract, and writes both tables and annotated images. It does **not** depend
 on the old debug tables in `legacy/`.
 
+## Run on another machine
+
+```bash
+git clone https://github.com/luanamoraescosta/RGpageparser && cd RGpageparser
+pip install -r requirements.txt            # Python 3.9+; Tesseract must be installed
+python rgpage.py run --vol 8               # review panel opens in the browser
+```
+
+Just keep the repo next to the data (paths are auto-detected):
+
+```
+RGPARSER/
+├── RGpageparser/           # this repo
+├── RG_data/rg_xml/rg8.xml  # source XML
+└── H4 6481 (8,1/           # scan images
+```
+
+Otherwise point to them with `--xml`, `--images`, `--base-dir` (or `RG_XML`,
+`RG_IMAGES`, `RG_DATA_DIR` env vars).
+
 ## Commands
 
 ```bash
