@@ -44,6 +44,46 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parent
 DEFAULT_IMAGES = Path("/Users/luanamoraescosta/DH/germania_sacra/RGPARSER/H4 6481 (8,1")
 DEFAULT_XML_DIR = Path("/Users/luanamoraescosta/DH/germania_sacra/RGPARSER/RG_data/rg_xml")
+VOLUMES_JSON = ROOT / "volumes.json"
+
+
+def load_volumes(path: Optional[Path] = None) -> dict:
+    """Load volumes.json (per-volume images dir + page-1 offset)."""
+    path = path or VOLUMES_JSON
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def resolve_volume_config(vol: int) -> dict:
+    """Resolve a volume's paths/settings from volumes.json (falls back to the
+    built-in volume-8 defaults when the file is missing or the volume is not
+    listed)."""
+    cfg = load_volumes()
+    top = {k: cfg[k] for k in ("xml_dir", "output_dir", "debug_dir") if k in cfg}
+    vc = cfg.get("volumes", {}).get(str(vol), {})
+
+    def _p(p, default: Path) -> Path:
+        if not p:
+            return default
+        p = Path(p)
+        return p if p.is_absolute() else (ROOT / p).resolve()
+
+    xml_dir = _p(top.get("xml_dir"), DEFAULT_XML_DIR)
+    output_dir = _p(top.get("output_dir"), ROOT / "output")
+    debug_dir = _p(top.get("debug_dir"), ROOT / "debug")
+    return {
+        "vol": vol,
+        "xml": _p(vc.get("xml"), xml_dir / f"rg{vol}.xml"),
+        "images": _p(vc.get("images"), DEFAULT_IMAGES),
+        "first_scan_no": vc.get("first_scan_no", 71),
+        "first_logical_page": vc.get("first_logical_page", 1),
+        "output_dir": output_dir,
+        "debug_dir": debug_dir,
+    }
 
 TESSERACT = "/opt/homebrew/bin/tesseract"
 if Path(TESSERACT).exists():
@@ -202,6 +242,8 @@ def scan_number(path: Path) -> Optional[int]:
 def ordered_scans(image_dir: Path, first_scan: int, from_scan: Optional[int] = None,
                   to_scan: Optional[int] = None, limit: Optional[int] = None) -> list[Path]:
     paths = []
+    if not image_dir.exists():
+        return paths
     for path in image_dir.iterdir():
         if path.suffix.lower() not in (".jpg", ".jpeg", ".png", ".tif", ".tiff"):
             continue
@@ -1314,9 +1356,17 @@ def scan_pages(image_dir: Path, cache: Path, valid_entries: set[int],
 
 
 def run(args: argparse.Namespace) -> int:
-    xml_path = args.xml or (DEFAULT_XML_DIR / f"rg{args.vol}.xml")
-    debug_dir = args.debug_dir or (ROOT / "debug" / f"rg{args.vol}")
-    out_dir = args.out_dir or (ROOT / "output")
+    vcfg = resolve_volume_config(args.vol)
+    args.vol = vcfg["vol"]
+    args.xml = args.xml or vcfg["xml"]
+    args.images = args.images or vcfg["images"]
+    args.first_scan = args.first_scan or vcfg["first_scan_no"]
+    args.first_page = args.first_page or vcfg["first_logical_page"]
+    args.out_dir = args.out_dir or vcfg["output_dir"]
+    args.debug_dir = args.debug_dir or (vcfg["debug_dir"] / f"rg{args.vol}")
+    xml_path = args.xml
+    debug_dir = args.debug_dir
+    out_dir = args.out_dir
     cache = cache_path(debug_dir)
     live_dir = args.live_dir or (out_dir / f"rg{args.vol}_live")
 
@@ -1432,7 +1482,7 @@ def serve_review(args: argparse.Namespace, pages_tsv: Path, xml_path: Path,
         "first_scan": args.first_scan,
         "first_page": args.first_page,
     }
-    app = review_app.build_app(cfg)
+    app = review_app.build_app(cfg, volumes=load_volumes())
     url = f"http://127.0.0.1:{args.port}"
     print(f"\nReview app: {url}  (Ctrl-C para parar)")
     webbrowser.open(url)
@@ -1446,7 +1496,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         p = sub.add_parser(name)
         p.add_argument("--vol", type=int, default=8)
         p.add_argument("--xml", type=Path)
-        p.add_argument("--images", type=Path, default=DEFAULT_IMAGES)
+        p.add_argument("--images", type=Path)
         p.add_argument("--debug-dir", type=Path)
         p.add_argument("--out-dir", type=Path)
         p.add_argument("--live-dir", type=Path)
@@ -1454,8 +1504,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         p.add_argument("--blocks-out", type=Path)
         p.add_argument("--images-out", type=Path)
         p.add_argument("--review-json", type=Path)
-        p.add_argument("--first-scan", type=int, default=71)
-        p.add_argument("--first-page", type=int, default=1)
+        p.add_argument("--first-scan", type=int)
+        p.add_argument("--first-page", type=int)
         p.add_argument("--from-scan", type=int)
         p.add_argument("--to-scan", type=int)
         p.add_argument("--limit", type=int)

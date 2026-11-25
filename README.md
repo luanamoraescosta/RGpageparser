@@ -31,6 +31,35 @@ RGPARSER/
 Otherwise point to them with `--xml`, `--images`, `--base-dir` (or `RG_XML`,
 `RG_IMAGES`, `RG_DATA_DIR` env vars).
 
+## Volumes
+
+To handle several RG volumes from the same repo, edit `volumes.json` at the
+repo root. Paths are relative to the repo root; each volume points to its scan
+folder and the scan that corresponds to printed page 1.
+
+```json
+{
+  "xml_dir": "../RG_data/rg_xml",
+  "output_dir": "output",
+  "debug_dir": "debug",
+  "volumes": {
+    "8":  { "images": "../H4 6481 (8,1",  "first_scan_no": 71, "first_logical_page": 1 },
+    "9":  { "images": "../H4 6481 (9,1",  "first_scan_no": 71, "first_logical_page": 1 },
+    "10": { "images": "../H4 6481 (10,1", "first_scan_no": 71, "first_logical_page": 1 }
+  }
+}
+```
+
+- `images` — folder of scan images.
+- `first_scan_no` — scan number that is printed page `1`.
+- `first_logical_page` — the printed page number of that first scan (usually `1`).
+- `xml` *(optional, per volume)* — override the XML file; defaults to `xml_dir/rg{vol}.xml`.
+
+The web panel shows a **Volume** dropdown. Pick a volume there to switch the
+panel to it without restarting; `--vol N` on the command line does the same on
+launch. A volume whose images/XML are not yet set up simply shows an empty
+panel.
+
 ## Commands
 
 ```bash
@@ -65,7 +94,7 @@ python rgpage.py review --vol 8        # open the panel (no re-run)
 
 Defaults: images in `H4 6481 (8,1`, XML in `../RG_data/rg_xml/rg8.xml`,
 first scan `71` = printed page `1`, cache in `debug/rg8/ocr_pages.jsonl`,
-outputs in `output/`.
+outputs in `output/`. These come from `volumes.json` for the selected `--vol`.
 
 Useful options:
 

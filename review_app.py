@@ -66,7 +66,10 @@ def load_context(cfg: dict) -> None:
     """Load docs + pages + entry_pages once into module globals."""
     global _DOCS, _DOCS_BY_ENTRY, _ENTRY_PAGES, _PAGES_BY_NUM, _PAGES_BY_SCAN
     load_page_review(cfg)
-    docs = rgpage.load_docs(cfg["xml_path"])
+    try:
+        docs = rgpage.load_docs(cfg["xml_path"])
+    except (FileNotFoundError, OSError):
+        docs = []
     _DOCS = {d.block_id: d for d in docs}
     _DOCS_BY_ENTRY = {}
     for d in docs:
@@ -442,6 +445,19 @@ INDEX_TMPL = """<!doctype html><html><head><meta charset="utf-8">
 </style></head><body>
 <h2>Repertorium Germanicum RG{{ vol }} — panel</h2>
 
+{% if volumes %}
+<div class="card" style="margin-bottom:12px">
+ <label>Volume:
+  <select onchange="if(this.value) location.href='/switch/'+this.value">
+   {% for v in volumes|sort %}
+    <option value="{{ v }}" {{ 'selected' if v|int == vol }}>RG{{ v }}</option>
+   {% endfor %}
+  </select>
+ </label>
+ <span style="color:#666">switch volume to review / run a different Repertorium Germanicum volume</span>
+</div>
+{% endif %}
+
 <div class="tabnav">
  <a data-tab="ocr" href="?tab=ocr">▶ Run OCR</a>
  <a href="{{ url_for('page_review') }}">📄 Page review</a>
@@ -809,12 +825,45 @@ petSearch.addEventListener('input', function(){
 # app factory
 # ---------------------------------------------------------------------------
 
-def build_app(cfg: dict) -> Flask:
+def _make_volume_cfg(vol: int) -> dict:
+    vc = rgpage.resolve_volume_config(vol)
+    out_dir = vc["output_dir"]
+    dbg = vc["debug_dir"] / f"rg{vol}"
+    return {
+        "vol": vol,
+        "xml_path": vc["xml"],
+        "cache": rgpage.cache_path(dbg),
+        "pages_tsv": out_dir / f"rg{vol}_pages.tsv",
+        "blocks_tsv": out_dir / f"rg{vol}_blocks.tsv",
+        "review_json": out_dir / f"rg{vol}_review.json",
+        "page_review_json": out_dir / f"rg{vol}_page_review.json",
+        "live_dir": out_dir / f"rg{vol}_live",
+        "images_dir": vc["images"],
+        "first_scan": vc["first_scan_no"],
+        "first_page": vc["first_logical_page"],
+    }
+
+
+def build_app(cfg: dict, volumes: dict | None = None) -> Flask:
+    volumes = volumes or {}
+    vol_map = volumes.get("volumes", {})
     load_context(cfg)
     if cfg["pages_tsv"].exists():
         load_review_data(cfg)
 
-    vol = cfg["vol"]
+    def _set_volume(vol: int) -> None:
+        new_cfg = _make_volume_cfg(vol)
+        cfg.clear()
+        cfg.update(new_cfg)
+        with LOCK:
+            STATE.update({"running": False, "done": False, "stage": "idle",
+                          "error": "", "progress": 0, "total": 0, "current": ""})
+            MATCHES.clear()
+            REVIEW.clear()
+            PAGE_REVIEW.clear()
+        load_context(cfg)
+        if cfg["pages_tsv"].exists():
+            load_review_data(cfg)
 
     def _serve_file(path: Path, placeholder: str) -> Response:
         if path.exists():
@@ -872,7 +921,7 @@ def build_app(cfg: dict) -> Flask:
         else:
             regests = regests[:100]
         return render_template_string(
-            INDEX_TMPL, vol=vol, running=running, stage=stage, current=current,
+            INDEX_TMPL, vol=cfg["vol"], volumes=vol_map, running=running, stage=stage, current=current,
             error=error, matches=ms, queue=queue, rows=rows,
             counts=counts, page_f=page_f, entry_f=entry_f, block_f=block_f,
             status_f=status_f, shown=len(rows), report=report,
@@ -880,6 +929,13 @@ def build_app(cfg: dict) -> Flask:
             missing=missing, regests=regests,
             regest_total=regest_total, regest_entry_f=regest_entry_f, regest_block_f=regest_block_f,
         )
+
+    @app.route("/switch/<int:vol>")
+    def switch_volume(vol):
+        if str(vol) not in vol_map:
+            return redirect(url_for("index"))
+        _set_volume(vol)
+        return redirect(url_for("index"))
 
     @app.route("/run", methods=["POST"])
     def run():
@@ -909,7 +965,7 @@ def build_app(cfg: dict) -> Flask:
 
     @app.route("/live")
     def live():
-        return render_template_string(LIVE_TMPL, vol=vol)
+        return render_template_string(LIVE_TMPL, vol=cfg["vol"])
 
     def find_page(n):
         with LOCK:
@@ -978,7 +1034,7 @@ def build_app(cfg: dict) -> Flask:
         prev_p = all_pages[idx - 1] if idx > 0 else None
         next_p = all_pages[idx + 1] if 0 <= idx < len(all_pages) - 1 else None
         return render_template_string(
-            PAGE_TMPL, vol=vol, m=m, cands=cands, blk_opts=blk_opts,
+            PAGE_TMPL, vol=cfg["vol"], m=m, cands=cands, blk_opts=blk_opts,
             STATUSES=STATUSES, POSITIONS=POSITIONS, ocr=text,
             block_html=block_html, last_desc=last_block_desc(m),
             matched_score=matched_score, saved=saved,
@@ -1018,7 +1074,7 @@ def build_app(cfg: dict) -> Flask:
     def page_review():
         pages = sorted(_PAGES_BY_SCAN.values(), key=lambda p: p.scan_no)
         uncertain = [p for p in pages if p.page_source == "none"]
-        return render_template_string(PAGES_TMPL, vol=vol, pages=uncertain,
+        return render_template_string(PAGES_TMPL, vol=cfg["vol"], pages=uncertain,
                                       saved=request.args.get("saved"))
 
     @app.route("/pages/save", methods=["POST"])
@@ -1130,33 +1186,34 @@ def main(argv: list[str] | None = None) -> int:
 
     p = argparse.ArgumentParser(description="RG review web panel.")
     p.add_argument("--vol", type=int, default=8)
-    p.add_argument("--images", type=Path, default=rgpage.DEFAULT_IMAGES)
+    p.add_argument("--images", type=Path)
     p.add_argument("--xml", type=Path)
     p.add_argument("--cache", type=Path)
     p.add_argument("--pages-tsv", type=Path)
     p.add_argument("--blocks-tsv", type=Path)
     p.add_argument("--review-json", type=Path)
     p.add_argument("--live-dir", type=Path)
-    p.add_argument("--first-scan", type=int, default=71)
-    p.add_argument("--first-page", type=int, default=1)
+    p.add_argument("--first-scan", type=int)
+    p.add_argument("--first-page", type=int)
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=5000)
     args = p.parse_args(argv)
 
     root = Path(__file__).resolve().parent
+    vc = rgpage.resolve_volume_config(args.vol)
     cfg = {
         "vol": args.vol,
-        "xml_path": args.xml or (rgpage.DEFAULT_XML_DIR / f"rg{args.vol}.xml"),
-        "cache": args.cache or (root / "debug" / f"rg{args.vol}" / "ocr_pages.jsonl"),
-        "pages_tsv": args.pages_tsv or (root / "output" / f"rg{args.vol}_pages.tsv"),
-        "blocks_tsv": args.blocks_tsv or (root / "output" / f"rg{args.vol}_blocks.tsv"),
-        "review_json": args.review_json or (root / "output" / f"rg{args.vol}_review.json"),
-        "live_dir": args.live_dir or (root / "output" / f"rg{args.vol}_live"),
-        "images_dir": args.images,
-        "first_scan": args.first_scan,
-        "first_page": args.first_page,
+        "xml_path": args.xml or vc["xml"],
+        "cache": args.cache or (vc["debug_dir"] / f"rg{args.vol}" / "ocr_pages.jsonl"),
+        "pages_tsv": args.pages_tsv or (vc["output_dir"] / f"rg{args.vol}_pages.tsv"),
+        "blocks_tsv": args.blocks_tsv or (vc["output_dir"] / f"rg{args.vol}_blocks.tsv"),
+        "review_json": args.review_json or (vc["output_dir"] / f"rg{args.vol}_review.json"),
+        "live_dir": args.live_dir or (vc["output_dir"] / f"rg{args.vol}_live"),
+        "images_dir": args.images or vc["images"],
+        "first_scan": args.first_scan or vc["first_scan_no"],
+        "first_page": args.first_page or vc["first_logical_page"],
     }
-    app = build_app(cfg)
+    app = build_app(cfg, volumes=rgpage.load_volumes())
     url = f"http://{args.host}:{args.port}"
     print(f"RG{args.vol} panel: {url}  (Ctrl-C to stop)")
     webbrowser.open(url)
