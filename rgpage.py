@@ -44,7 +44,7 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parent
 DEFAULT_IMAGES = Path("/Users/luanamoraescosta/DH/germania_sacra/RGPARSER/H4 6481 (8,1")
 DEFAULT_XML_DIR = Path("/Users/luanamoraescosta/DH/germania_sacra/RGPARSER/RG_data/rg_xml")
-VOLUMES_JSON = ROOT / "volumes.json"
+VOLUMES_JSON = ROOT / "data" / "input" / "volumes.json"
 
 
 def load_volumes(path: Optional[Path] = None) -> dict:
@@ -61,7 +61,8 @@ def load_volumes(path: Optional[Path] = None) -> dict:
 def resolve_volume_config(vol: int) -> dict:
     """Resolve a volume's paths/settings from volumes.json (falls back to the
     built-in volume-8 defaults when the file is missing or the volume is not
-    listed)."""
+    listed). A volume may be split into several physical books, each with its
+    own images dir; page numbers then continue across the books in order."""
     cfg = load_volumes()
     top = {k: cfg[k] for k in ("xml_dir", "output_dir", "debug_dir") if k in cfg}
     vc = cfg.get("volumes", {}).get(str(vol), {})
@@ -75,15 +76,70 @@ def resolve_volume_config(vol: int) -> dict:
     xml_dir = _p(top.get("xml_dir"), DEFAULT_XML_DIR)
     output_dir = _p(top.get("output_dir"), ROOT / "output")
     debug_dir = _p(top.get("debug_dir"), ROOT / "debug")
+
+    raw_parts = vc.get("parts")
+    if not raw_parts:
+        raw_parts = [vc]
+    parts = []
+    for i, p in enumerate(raw_parts):
+        parts.append({
+            "name": str(p.get("name") or f"part{i + 1}"),
+            "images": _p(p.get("images"), DEFAULT_IMAGES),
+            "first_scan_no": int(p.get("first_scan_no", 71)),
+            "first_logical_page": p.get("first_logical_page"),
+        })
+    first = parts[0]
     return {
         "vol": vol,
         "xml": _p(vc.get("xml"), xml_dir / f"rg{vol}.xml"),
-        "images": _p(vc.get("images"), DEFAULT_IMAGES),
-        "first_scan_no": vc.get("first_scan_no", 71),
-        "first_logical_page": vc.get("first_logical_page", 1),
+        "parts": parts,
+        "images": first["images"],
+        "first_scan_no": first["first_scan_no"],
+        "first_logical_page": first["first_logical_page"] or 1,
         "output_dir": output_dir,
         "debug_dir": debug_dir,
     }
+
+
+def scan_sequence(parts: list[dict], from_scan: Optional[int] = None,
+                  to_scan: Optional[int] = None,
+                  limit: Optional[int] = None) -> list[tuple[Path, int, int]]:
+    """Flatten all books of a volume into one ordered scan sequence.
+
+    Returns a list of (path, scan_no, expected_page).  scan_no is made globally
+    unique by offsetting each book so the numbers never collide.  expected_page
+    continues across books: a book that does not set first_logical_page starts
+    right after the previous book's last page."""
+    seq: list[tuple[Path, int, int]] = []
+    prev_base: Optional[int] = None
+    prev_count = 0
+    for pidx, part in enumerate(parts):
+        scans = ordered_scans(part["images"], part["first_scan_no"],
+                              from_scan, to_scan)
+        if part.get("first_logical_page") is not None:
+            base = int(part["first_logical_page"])
+        elif prev_base is None:
+            base = 1
+        else:
+            base = prev_base + prev_count
+        for j, path in enumerate(scans):
+            no = scan_number(path)
+            seq.append((path, pidx * 1_000_000 + (no or 0), base + j))
+        prev_base = base
+        prev_count = len(scans)
+        if limit is not None and len(seq) >= limit:
+            seq = seq[:limit]
+            break
+    return seq
+
+
+def find_scan_path(parts: list[dict], filename: str) -> Path:
+    """Locate a scan file across a volume's books (the filename is unique)."""
+    for part in parts:
+        p = part["images"] / filename
+        if p.exists():
+            return p
+    return parts[0]["images"] / filename
 
 TESSERACT = "/opt/homebrew/bin/tesseract"
 if Path(TESSERACT).exists():
@@ -938,19 +994,15 @@ def contact_sheet(paths: list[Path], labels: list[str], out: Path,
 # page numbers and entry mapping
 # ---------------------------------------------------------------------------
 
-def normalize_pages(pages: dict[str, PageOCR], first_scan: int,
-                    first_page: int, image_dir: Optional[Path] = None) -> None:
-    index: dict[int, int] = {}
-    if image_dir is not None:
-        for i, path in enumerate(ordered_scans(Path(image_dir), first_scan)):
-            number = scan_number(path)
-            if number is not None:
-                index[number] = i
+def normalize_pages(pages: dict[str, PageOCR], parts: list[dict]) -> None:
+    expected: dict[str, int] = {}
+    for path, _no, page in scan_sequence(parts):
+        expected[path.name] = page
     ordered = sorted(pages.values(), key=lambda p: p.scan_no)
     for i, page in enumerate(ordered):
-        expected = first_page + index.get(page.scan_no, i)
-        if page.page is None or abs(page.page - expected) > 2:
-            page.page = expected
+        exp = expected.get(page.scan, i + 1)
+        if page.page is None or abs(page.page - exp) > 2:
+            page.page = exp
             page.page_source = "inferred"
 
 
@@ -1026,6 +1078,41 @@ def docs_near_page(page_no: int, entry_pages: dict[int, int],
         if page_no - pages_around <= p <= page_no + pages_after:
             entries.add(entry)
     return [doc for entry in sorted(entries) for doc in docs_by_entry.get(entry, [])]
+
+
+def last_header_entry_for_page(page_no: int, entry_pages: dict[int, int]) -> Optional[int]:
+    """The last entry whose header is anchored on this page, or the last entry
+    anchored on any earlier page if this page anchors none."""
+    on = sorted(e for e, p in entry_pages.items() if p == page_no)
+    if on:
+        return max(on)
+    prev = sorted(e for e, p in entry_pages.items() if p < page_no)
+    return max(prev) if prev else None
+
+
+def candidate_entries_for_page(page_no: int, entry_pages: dict[int, int],
+                               back_entries: int = 1, forward_entries: int = 1,
+                               page_entries: Optional[list[int]] = None) -> list[int]:
+    """Port of the legacy stage3 heuristic: anchor on the last header entry of
+    the page and return a small window of entries around it.
+
+    ``page_entries`` are the entries actually detected on the page; when given
+    they anchor the window (the entry->page mapping can carry cross-page
+    interpolations that would otherwise shift the anchor)."""
+    entries = sorted(entry_pages)
+    if not entries:
+        return []
+    if page_entries:
+        on = [e for e in page_entries if e in entry_pages]
+        target = max(on) if on else last_header_entry_for_page(page_no, entry_pages)
+    else:
+        target = last_header_entry_for_page(page_no, entry_pages)
+    if target is None:
+        return []
+    if target not in entries:
+        return [target]
+    idx = entries.index(target)
+    return entries[max(0, idx - back_entries): min(len(entries), idx + forward_entries + 1)]
 
 
 # ---------------------------------------------------------------------------
@@ -1167,7 +1254,7 @@ def match_text(text: str, docs: list[Doc], first_line: str = "",
             best_pos = "starts-here"
     return best_doc, best_score, best_pos
 def match_pages(pages: dict[str, PageOCR], entry_pages: dict[int, int],
-                docs_by_entry: dict[int, list[Doc]], image_dir: Path,
+                docs_by_entry: dict[int, list[Doc]], parts: list[dict],
                 use_easy: bool) -> list[PageMatch]:
     matches: list[PageMatch] = []
     ordered = sorted(pages.values(), key=lambda p: p.scan_no)
@@ -1184,8 +1271,8 @@ def match_pages(pages: dict[str, PageOCR], entry_pages: dict[int, int],
         status = "ok" if score >= 55 else "low-score"
 
         if use_easy and score < 55:
-            img = cv2.imdecode(np.fromfile(str(image_dir / page.scan), dtype=np.uint8),
-                               cv2.IMREAD_COLOR)
+            img = cv2.imdecode(np.fromfile(str(find_scan_path(parts, page.scan)),
+                                           dtype=np.uint8), cv2.IMREAD_COLOR)
             if img is not None:
                 y0 = int(img.shape[0] * 0.60)
                 easy_lines = []
@@ -1318,39 +1405,35 @@ def write_blocks_tsv(spans: dict[str, Span], out: Path) -> None:
 # pipeline
 # ---------------------------------------------------------------------------
 
-def scan_pages(image_dir: Path, cache: Path, valid_entries: set[int],
-               first_scan: int, first_page: int, live: LiveView, rebuild: bool,
-               from_scan: Optional[int], to_scan: Optional[int],
-               limit: Optional[int], progress_cb=None) -> dict[str, PageOCR]:
+def scan_pages(parts: list[dict], cache: Path, valid_entries: set[int],
+               live: LiveView, rebuild: bool, from_scan: Optional[int],
+               to_scan: Optional[int], limit: Optional[int],
+               progress_cb=None) -> dict[str, PageOCR]:
     pages = {} if rebuild else load_cache(cache)
-    paths = ordered_scans(image_dir, first_scan, from_scan, to_scan, limit)
-    index = {}
-    for i, path in enumerate(ordered_scans(image_dir, first_scan)):
-        number = scan_number(path)
-        if number is not None:
-            index[number] = i
-    total = len(paths)
-    for i, path in enumerate(paths, 1):
+    seq = scan_sequence(parts, from_scan, to_scan, limit)
+    total = len(seq)
+    for i, (path, scan_no, expected) in enumerate(seq, 1):
         if path.name in pages and not rebuild:
             continue
         page = ocr_page(path, valid_entries)
-        expected = first_page + index.get(page.scan_no, i - 1)
+        page.scan_no = scan_no
         if page.page is None or abs(page.page - expected) > 2:
             page.page = expected
             page.page_source = "inferred"
         pages[path.name] = page
         img = cv2.imdecode(np.fromfile(str(path), dtype=np.uint8), cv2.IMREAD_COLOR)
-        live.update(annotate(img, page), f"scan {page.scan_no} page {page.page}")
+        live.update(annotate(img, page), f"scan {scan_no} page {page.page}")
         if i % 10 == 0:
             save_cache(cache, pages)
-        print(f"[{i}/{total}] scan {page.scan_no:04d} page {page.page} "
-              f"entries {len(page.entries)} lines {len(page.lines)} "
-              f"conf {page.mean_conf:.0f}", flush=True)
+        if i % 10 == 0 or i == total:
+            print(f"[{i}/{total}] scan {scan_no:04d} page {page.page} "
+                  f"entries {len(page.entries)} conf {page.mean_conf:.0f}",
+                  flush=True)
         if progress_cb:
-            progress_cb(i, total, page.scan_no, page.page)
+            progress_cb(i, total, scan_no, page.page)
     save_cache(cache, pages)
     if limit is not None:
-        kept = {p.name for p in paths}
+        kept = {path.name for path, _no, _exp in seq}
         pages = {k: v for k, v in pages.items() if k in kept}
     return pages
 
@@ -1359,6 +1442,11 @@ def run(args: argparse.Namespace) -> int:
     vcfg = resolve_volume_config(args.vol)
     args.vol = vcfg["vol"]
     args.xml = args.xml or vcfg["xml"]
+    parts = vcfg["parts"]
+    if args.images:
+        parts = [{"name": "part1", "images": args.images,
+                  "first_scan_no": args.first_scan or vcfg["first_scan_no"],
+                  "first_logical_page": args.first_page or vcfg["first_logical_page"]}]
     args.images = args.images or vcfg["images"]
     args.first_scan = args.first_scan or vcfg["first_scan_no"]
     args.first_page = args.first_page or vcfg["first_logical_page"]
@@ -1373,7 +1461,7 @@ def run(args: argparse.Namespace) -> int:
     if args.command == "review":
         pages_tsv = args.pages_out or (out_dir / f"rg{args.vol}_pages.tsv")
         serve_review(args, pages_tsv=pages_tsv, xml_path=xml_path, cache=cache,
-                     debug_dir=debug_dir, live_dir=live_dir)
+                     debug_dir=debug_dir, live_dir=live_dir, parts=parts)
         return 0
 
     docs = load_docs(xml_path)
@@ -1385,9 +1473,8 @@ def run(args: argparse.Namespace) -> int:
     live = LiveView(live_dir, args.show, args.delay)
     pages = load_cache(cache) if not args.rebuild and cache.exists() else {}
     if args.command in ("run", "scan"):
-        pages = scan_pages(args.images, cache, valid_entries, args.first_scan,
-                           args.first_page, live, args.rebuild, args.from_scan,
-                           args.to_scan, args.limit)
+        pages = scan_pages(parts, cache, valid_entries, live, args.rebuild,
+                           args.from_scan, args.to_scan, args.limit)
     if args.command == "scan":
         live.close()
         return 0
@@ -1396,9 +1483,9 @@ def run(args: argparse.Namespace) -> int:
         print("No OCR cache. Run `python rgpage.py scan --vol N` first.")
         return 1
 
-    normalize_pages(pages, args.first_scan, args.first_page, args.images)
+    normalize_pages(pages, parts)
     entry_pages = build_entry_pages(pages)
-    matches = match_pages(pages, entry_pages, docs_by_entry, args.images, args.easyocr)
+    matches = match_pages(pages, entry_pages, docs_by_entry, parts, args.easyocr)
     spans = build_spans(matches, docs, entry_pages)
 
     pages_tsv = args.pages_out or (out_dir / f"rg{args.vol}_pages.tsv")
@@ -1410,7 +1497,7 @@ def run(args: argparse.Namespace) -> int:
     for match in matches:
         if not args.show and args.command != "match":
             break
-        path = args.images / match.page.scan
+        path = find_scan_path(parts, match.page.scan)
         img = cv2.imdecode(np.fromfile(str(path), dtype=np.uint8), cv2.IMREAD_COLOR)
         if img is not None:
             live.update(annotate(img, match.page, match), f"page {match.page.page}")
@@ -1425,7 +1512,7 @@ def run(args: argparse.Namespace) -> int:
         img_dir.mkdir(parents=True, exist_ok=True)
         saved, labels = [], []
         for m in selected:
-            path = args.images / m.page.scan
+            path = find_scan_path(parts, m.page.scan)
             img = cv2.imdecode(np.fromfile(str(path), dtype=np.uint8), cv2.IMREAD_COLOR)
             if img is None:
                 continue
@@ -1453,12 +1540,13 @@ def run(args: argparse.Namespace) -> int:
 
     if args.command in ("run", "match") and not args.no_review:
         serve_review(args, pages_tsv=pages_tsv, xml_path=xml_path, cache=cache,
-                     debug_dir=debug_dir, live_dir=live_dir)
+                     debug_dir=debug_dir, live_dir=live_dir, parts=parts)
     return 0
 
 
 def serve_review(args: argparse.Namespace, pages_tsv: Path, xml_path: Path,
-                 cache: Path, debug_dir: Path, live_dir: Path) -> None:
+                 cache: Path, debug_dir: Path, live_dir: Path,
+                 parts: Optional[list[dict]] = None) -> None:
     """Launch the review web app (default after run/match)."""
     import webbrowser
 
@@ -1469,6 +1557,9 @@ def serve_review(args: argparse.Namespace, pages_tsv: Path, xml_path: Path,
         return
 
     out_dir = args.out_dir or (ROOT / "output")
+    parts = parts or [{"name": "part1", "images": args.images,
+                       "first_scan_no": args.first_scan,
+                       "first_logical_page": args.first_page}]
     cfg = {
         "vol": args.vol,
         "xml_path": xml_path,
@@ -1481,6 +1572,7 @@ def serve_review(args: argparse.Namespace, pages_tsv: Path, xml_path: Path,
         "images_dir": args.images,
         "first_scan": args.first_scan,
         "first_page": args.first_page,
+        "parts": parts,
     }
     app = review_app.build_app(cfg, volumes=load_volumes())
     url = f"http://127.0.0.1:{args.port}"

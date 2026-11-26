@@ -5,3 +5,9 @@ __pycache__/
 debug/
 output/
 scans/
+
+data/input/scan/
+data/input/xmls/
+data/output/
+data/debug/
+.DS_Store

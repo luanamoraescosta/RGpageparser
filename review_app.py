@@ -25,6 +25,7 @@ import csv
 import json
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 import cv2
@@ -75,8 +76,7 @@ def load_context(cfg: dict) -> None:
     for d in docs:
         _DOCS_BY_ENTRY.setdefault(d.entry, []).append(d)
     pages = rgpage.load_cache(cfg["cache"])
-    rgpage.normalize_pages(pages, cfg["first_scan"], cfg["first_page"],
-                           cfg["images_dir"])
+    rgpage.normalize_pages(pages, cfg["parts"])
     _refresh_context(cfg, pages)
 
 
@@ -317,12 +317,11 @@ def _rematch(cfg: dict) -> None:
         STATE["total"] = 0
     try:
         pages = rgpage.load_cache(cfg["cache"])
-        rgpage.normalize_pages(pages, cfg["first_scan"], cfg["first_page"],
-                               cfg["images_dir"])
+        rgpage.normalize_pages(pages, cfg["parts"])
         apply_page_overrides(pages)
         entry_pages = rgpage.build_entry_pages(pages)
         matches = rgpage.match_pages(pages, entry_pages, _DOCS_BY_ENTRY,
-                                     cfg["images_dir"], False)
+                                     cfg["parts"], False)
         spans = rgpage.build_spans(matches, list(_DOCS.values()), entry_pages)
         rgpage.write_pages_tsv(matches, cfg["pages_tsv"])
         rgpage.write_blocks_tsv(spans, cfg["blocks_tsv"])
@@ -370,18 +369,16 @@ def _run_job(cfg: dict) -> None:
                 except ValueError:
                     limit = None
         pages = rgpage.scan_pages(
-            cfg["images_dir"], cfg["cache"], set(_DOCS_BY_ENTRY),
-            cfg["first_scan"], cfg["first_page"], live, rebuild,
-            None, None, limit, progress_cb=cb)
+            cfg["parts"], cfg["cache"], set(_DOCS_BY_ENTRY),
+            live, rebuild, None, None, limit, progress_cb=cb)
 
         with LOCK:
             STATE["stage"] = "matching"
             STATE["current"] = "generating tables…"
-        rgpage.normalize_pages(pages, cfg["first_scan"], cfg["first_page"],
-                               cfg["images_dir"])
+        rgpage.normalize_pages(pages, cfg["parts"])
         entry_pages = rgpage.build_entry_pages(pages)
         matches = rgpage.match_pages(pages, entry_pages, _DOCS_BY_ENTRY,
-                                     cfg["images_dir"], easyocr)
+                                     cfg["parts"], easyocr)
         spans = rgpage.build_spans(matches, list(_DOCS.values()), entry_pages)
         rgpage.write_pages_tsv(matches, cfg["pages_tsv"])
         rgpage.write_blocks_tsv(spans, cfg["blocks_tsv"])
@@ -390,7 +387,7 @@ def _run_job(cfg: dict) -> None:
         for mm in matches:
             if mm.page.blank or not mm.page.page or not mm.block:
                 continue
-            path = cfg["images_dir"] / mm.page.scan
+            path = rgpage.find_scan_path(cfg["parts"], mm.page.scan)
             img = cv2.imdecode(np.fromfile(str(path), dtype=np.uint8), cv2.IMREAD_COLOR)
             if img is not None:
                 live.update(rgpage.annotate(img, mm.page, mm),
@@ -683,14 +680,15 @@ PAGES_TMPL = """<!doctype html><html><head><meta charset="utf-8">
  a{color:#0a58ca;text-decoration:none}
  h2{margin-top:0}
  .hint{color:#555;font-size:13px}
- .row{display:flex;gap:16px;align-items:flex-start;border:1px solid #ddd;border-radius:8px;padding:10px;margin-bottom:12px}
- .row img{max-height:260px;border:1px solid #ccc;background:#fff}
- .row form{min-width:200px;font-size:14px}
- .row label{display:block;font-weight:600}
- .row input{width:90px;padding:4px 6px;font-size:14px;margin-top:4px}
- .badge{display:inline-block;padding:1px 7px;border-radius:4px;font-size:11px;margin-left:6px}
+ .tabs{margin:14px 0}
+ .tabs a{padding:6px 12px;border:1px solid #ccc;border-radius:6px;margin-right:6px;background:#fff;font-size:14px}
+ .tabs a.cur{background:#0a58ca;color:#fff;border-color:#0a58ca}
+ table{border-collapse:collapse;width:100%;font-size:14px}
+ th,td{border:1px solid #ddd;padding:5px 8px;text-align:left;vertical-align:middle}
+ td input{width:80px;padding:3px 5px;font-size:14px}
+ .badge{display:inline-block;padding:1px 7px;border-radius:4px;font-size:11px}
  .badge.inf{background:#fff3cd;color:#8a6d1a}
- .badge.man{background:#d9f2df;color:#137a3a}
+ .badge.none{background:#f8d7da;color:#842029}
  .badge.tess{background:#e3e6ea;color:#444}
  .fixed{position:sticky;bottom:0;background:#f6f7f9;border:1px solid #ddd;padding:12px;border-radius:8px}
  button{padding:8px 16px}
@@ -699,26 +697,30 @@ PAGES_TMPL = """<!doctype html><html><head><meta charset="utf-8">
 </style></head><body>
 <p><a href="{{ url_for('index') }}">&larr; back to panel</a></p>
 <h2>Page review <small>RG{{ vol }}</small></h2>
-<p class="hint">Only pages whose folio number could <b>not</b> be detected at all are listed.
-Pages auto-corrected from the scan sequence (no gaps) are considered correct and hidden.
-Check the image and set the correct page number. When done, click <b>Save &amp; re-match</b>.</p>
+<p class="hint">Set the correct folio (page) number for any scan, then click <b>Save &amp; re-match</b> to re-locate the regests.
+Pages whose number was <b>inferred</b> / <b>not detected</b> are highlighted; low OCR confidence shows in the <b>Conf</b> column.</p>
+<p class="tabs">
+ <a href="{{ url_for('page_review', filter='all') }}" class="{{ 'cur' if flt=='all' }}">All ({{ total }})</a>
+ <a href="{{ url_for('page_review', filter='inferred') }}" class="{{ 'cur' if flt=='inferred' }}">Inferred / none ({{ n_inferred }})</a>
+ <a href="{{ url_for('page_review', filter='low') }}" class="{{ 'cur' if flt=='low' }}">Low conf ({{ n_low }})</a>
+</p>
 {% if saved %}<p class="done">Saved ✓ — re-matching.</p>{% endif %}
 {% if not pages %}
- <p class="empty">No uncertain pages. All folio numbers were detected.</p>
+ <p class="empty">No pages in this filter.</p>
 {% else %}
 <form method="post" action="{{ url_for('pages_save') }}">
-{% for p in pages %}
- <div class="row">
-  <img src="{{ url_for('scan', n=p.scan_no) }}" alt="scan {{ p.scan_no }}">
-  <div>
-   <label>scan {{ p.scan_no }} → page
-    <input type="number" name="page_{{ p.scan_no }}" min="1" value="{{ p.page }}">
-   </label>
-   <p class="hint">current: {{ p.page }} <span class="badge {{ p.page_source }}">{{ p.page_source }}</span></p>
-   <p class="hint">detected entries on page: {{ p.entries if p.entries else 'none' }}</p>
-  </div>
- </div>
-{% endfor %}
+<table>
+ <tr><th>Scan</th><th>Page</th><th>Source</th><th>Conf</th><th>View</th></tr>
+ {% for p in pages %}
+ <tr>
+  <td>{{ p.scan_no }}</td>
+  <td><input type="number" name="page_{{ p.scan_no }}" min="1" value="{{ p.page }}"></td>
+  <td><span class="badge {{ 'inf' if p.page_source=='inferred' else ('none' if p.page_source=='none' else 'tess') }}">{{ p.page_source }}</span></td>
+  <td>{{ '%.0f'|format(p.mean_conf) if p.mean_conf else '—' }}</td>
+  <td><a href="{{ url_for('scan', n=p.scan_no) }}" target="_blank">view</a></td>
+ </tr>
+ {% endfor %}
+</table>
  <div class="fixed"><button type="submit">Save &amp; re-match</button></div>
 </form>
 {% endif %}
@@ -801,12 +803,10 @@ PAGE_TMPL = """<!doctype html><html><head><meta charset="utf-8">
  </form>
  </div>
 <script>
-const ALL_BLOCKS = {{ all_blocks | tojson }};
 const petSearch = document.getElementById('petSearch');
 const petRes = document.getElementById('petRes');
 const lastBlock = document.querySelector('input[name="last_block"]');
-function renderRes(entry){
-  const blocks = ALL_BLOCKS.filter(b => b[0] === entry);
+function renderRes(blocks, entry){
   if(!blocks.length){ petRes.innerHTML = '<i>no. ' + entry + ' not found</i>'; return; }
   petRes.innerHTML = blocks.map(b =>
     '<div class="candgrp"><b>#' + b[0] + '</b>: <a href="javascript:void(0)" onclick="setBlk(\'' + b[1] + '\')">' + b[2] + ' · ' + b[1] + '</a></div>'
@@ -815,7 +815,12 @@ function renderRes(entry){
 window.setBlk = function(bid){ lastBlock.value = bid; petSearch.value = ''; petRes.innerHTML = ''; };
 petSearch.addEventListener('input', function(){
   const v = this.value.replace(/\D/g, '');
-  if(v) renderRes(parseInt(v, 10)); else petRes.innerHTML = '';
+  if(!v){ petRes.innerHTML = ''; return; }
+  const entry = parseInt(v, 10);
+  fetch('{{ url_for('api_blocks') }}?q=' + entry)
+    .then(r => r.json())
+    .then(blocks => renderRes(blocks, entry))
+    .catch(function(){ petRes.innerHTML = '<i>search error</i>'; });
 });
 </script>
 </body></html>"""
@@ -841,6 +846,7 @@ def _make_volume_cfg(vol: int) -> dict:
         "images_dir": vc["images"],
         "first_scan": vc["first_scan_no"],
         "first_page": vc["first_logical_page"],
+        "parts": vc["parts"],
     }
 
 
@@ -955,6 +961,17 @@ def build_app(cfg: dict, volumes: dict | None = None) -> Flask:
                             ("running", "done", "stage", "error", "progress",
                              "total", "current")})
 
+    @app.route("/api/blocks")
+    def api_blocks():
+        q = request.args.get("q", "").strip()
+        try:
+            entry = int(q)
+        except ValueError:
+            return jsonify([])
+        blocks = [[entry, d.block_id, d.kind]
+                  for d in _DOCS_BY_ENTRY.get(entry, [])]
+        return jsonify(blocks)
+
     @app.route("/latest.jpg")
     def latest():
         return _serve_file(cfg["live_dir"] / "latest.jpg", "waiting for OCR...")
@@ -976,15 +993,13 @@ def build_app(cfg: dict, volumes: dict | None = None) -> Flask:
         m = find_page(n)
         if m is None:
             return "page not found (run OCR first)", 404
-        docs_near = rgpage.docs_near_page(m.page.page, _ENTRY_PAGES,
-                                          m.page.entries, _DOCS_BY_ENTRY,
-                                          pages_around=0, extra=2, pages_after=0)
+        cand_entries = rgpage.candidate_entries_for_page(m.page.page, _ENTRY_PAGES,
+                                                         page_entries=m.page.entries)
+        docs_near = [d for e in cand_entries for d in _DOCS_BY_ENTRY.get(e, [])]
         text = " ".join(ln.text for ln in m.page.lines).strip()
         scored = {d.block_id: rgpage.fuzzy_score(text, d)[0] for d in docs_near}
-        # make sure every block of the detected/matched petentenvita appears
-        guaranteed = set(m.page.entries)
-        if m.block:
-            guaranteed.add(m.block.entry)
+        # make sure the matched block's entry appears even if outside the window
+        guaranteed = {m.block.entry} if m.block else set()
         have = {d.block_id for d in docs_near}
         for e in guaranteed:
             for d in _DOCS_BY_ENTRY.get(e, []):
@@ -1012,8 +1027,6 @@ def build_app(cfg: dict, volumes: dict | None = None) -> Flask:
         blk_opts = sorted(
             ((d.block_id, d.kind, d.entry, scored[d.block_id]) for d in docs_near),
             key=lambda t: (-t[3], t[0]))
-        all_blocks = [[e, d.block_id, d.kind]
-                      for e, docs in _DOCS_BY_ENTRY.items() for d in docs]
         bt = m.block.text if m.block else ""
         matched_score = m.score if m.status != "blank-page" else None
         # highlight the aligned portion of the matched text
@@ -1039,7 +1052,6 @@ def build_app(cfg: dict, volumes: dict | None = None) -> Flask:
             block_html=block_html, last_desc=last_block_desc(m),
             matched_score=matched_score, saved=saved,
             prev_p=prev_p, next_p=next_p,
-            all_blocks=all_blocks,
         )
 
     @app.route("/image/<int:n>.png")
@@ -1047,7 +1059,7 @@ def build_app(cfg: dict, volumes: dict | None = None) -> Flask:
         m = find_page(n)
         if m is None:
             return "not found", 404
-        path = cfg["images_dir"] / m.page.scan
+        path = rgpage.find_scan_path(cfg["parts"], m.page.scan)
         img = cv2.imdecode(np.fromfile(str(path), dtype=np.uint8), cv2.IMREAD_COLOR)
         if img is None:
             return "image not found", 404
@@ -1061,7 +1073,7 @@ def build_app(cfg: dict, volumes: dict | None = None) -> Flask:
         page = _PAGES_BY_SCAN.get(n)
         if page is None:
             return "scan not found", 404
-        path = cfg["images_dir"] / page.scan
+        path = rgpage.find_scan_path(cfg["parts"], page.scan)
         img = cv2.imdecode(np.fromfile(str(path), dtype=np.uint8), cv2.IMREAD_COLOR)
         if img is None:
             return "image not found", 404
@@ -1073,8 +1085,22 @@ def build_app(cfg: dict, volumes: dict | None = None) -> Flask:
     @app.route("/pages")
     def page_review():
         pages = sorted(_PAGES_BY_SCAN.values(), key=lambda p: p.scan_no)
-        uncertain = [p for p in pages if p.page_source == "none"]
-        return render_template_string(PAGES_TMPL, vol=cfg["vol"], pages=uncertain,
+        def uncertain(p):
+            return p.page_source != "tesseract"
+        def low_conf(p):
+            return p.mean_conf < 65
+        flt = request.args.get("filter", "all")
+        n_inferred = sum(1 for p in pages if uncertain(p))
+        n_low = sum(1 for p in pages if low_conf(p))
+        if flt == "inferred":
+            shown = [p for p in pages if uncertain(p)]
+        elif flt == "low":
+            shown = [p for p in pages if low_conf(p)]
+        else:
+            shown = pages
+        return render_template_string(PAGES_TMPL, vol=cfg["vol"], pages=shown,
+                                      flt=flt, total=len(pages),
+                                      n_inferred=n_inferred, n_low=n_low,
                                       saved=request.args.get("saved"))
 
     @app.route("/pages/save", methods=["POST"])
@@ -1146,7 +1172,8 @@ def build_app(cfg: dict, volumes: dict | None = None) -> Flask:
         with LOCK:
             rows = [apply_overrides(m) for m in MATCHES]
             rgpage.build_spans(rows, list(_DOCS.values()), _ENTRY_PAGES)
-        out = cfg["pages_tsv"].with_name(cfg["pages_tsv"].stem + "_reviewed.tsv")
+        out = cfg["pages_tsv"].with_name(
+            f"rg{cfg['vol']}_pages_{datetime.now().strftime('%Y%m%d_%H%M%S')}.tsv")
         rgpage.write_pages_tsv(rows, out, overridden={int(k) for k in REVIEW})
         return redirect(url_for("index", tab="export"))
 
@@ -1157,7 +1184,8 @@ def build_app(cfg: dict, volumes: dict | None = None) -> Flask:
         with LOCK:
             rows = [apply_overrides(m) for m in MATCHES]
             rgpage.build_spans(rows, list(_DOCS.values()), _ENTRY_PAGES)
-        out = cfg["pages_tsv"].with_name(cfg["pages_tsv"].stem + "_reviewed.tsv")
+        out = cfg["pages_tsv"].with_name(
+            f"rg{cfg['vol']}_pages_{datetime.now().strftime('%Y%m%d_%H%M%S')}.tsv")
         rgpage.write_pages_tsv(rows, out, overridden={int(k) for k in REVIEW})
         return send_file(out, as_attachment=True,
                          download_name=out.name, mimetype="text/tab-separated-values")
@@ -1165,7 +1193,7 @@ def build_app(cfg: dict, volumes: dict | None = None) -> Flask:
     @app.route("/download/report")
     def download_report():
         rows = build_report()
-        out = cfg["pages_tsv"].with_name(cfg["pages_tsv"].stem + "_report.tsv")
+        out = cfg["pages_tsv"].with_name(f"rg{cfg['vol']}_page_per_regest.tsv")
         with open(out, "w", encoding="utf-8", newline="") as fh:
             w = csv.writer(fh, delimiter="\t")
             w.writerow(["petentenvita", "last regest/head", "kind",
@@ -1212,6 +1240,7 @@ def main(argv: list[str] | None = None) -> int:
         "images_dir": args.images or vc["images"],
         "first_scan": args.first_scan or vc["first_scan_no"],
         "first_page": args.first_page or vc["first_logical_page"],
+        "parts": vc["parts"],
     }
     app = build_app(cfg, volumes=rgpage.load_volumes())
     url = f"http://{args.host}:{args.port}"

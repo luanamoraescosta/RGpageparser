@@ -33,27 +33,37 @@ Otherwise point to them with `--xml`, `--images`, `--base-dir` (or `RG_XML`,
 
 ## Volumes
 
-To handle several RG volumes from the same repo, edit `volumes.json` at the
-repo root. Paths are relative to the repo root; each volume points to its scan
-folder and the scan that corresponds to printed page 1.
+Edit `data/input/volumes.json`. Paths are relative to the repo root. A volume
+may be split across several physical **books**, each with its own scan folder;
+the page numbers then continue across the books in order.
 
 ```json
 {
-  "xml_dir": "../RG_data/rg_xml",
-  "output_dir": "output",
-  "debug_dir": "debug",
+  "xml_dir": "data/input/xmls",
+  "output_dir": "data/output",
+  "debug_dir": "data/debug",
   "volumes": {
-    "8":  { "images": "../H4 6481 (8,1",  "first_scan_no": 71, "first_logical_page": 1 },
-    "9":  { "images": "../H4 6481 (9,1",  "first_scan_no": 71, "first_logical_page": 1 },
-    "10": { "images": "../H4 6481 (10,1", "first_scan_no": 71, "first_logical_page": 1 }
+    "5": {
+      "parts": [
+        {"name": "5.1.1", "images": "data/input/scan/5/He 6481 (5,1,1", "first_scan_no": 134, "first_logical_page": 1},
+        {"name": "5.1.2", "images": "data/input/scan/5/He 6481 (5,1,2", "first_scan_no": 8},
+        {"name": "5.1.3", "images": "data/input/scan/5/He 6481 (5,1,3", "first_scan_no": 8}
+      ]
+    },
+    "6": {"parts": [{"name": "6.1", "images": "data/input/scan/6/He 6481 (6,1", "first_scan_no": 47, "first_logical_page": 1}]}
   }
 }
 ```
 
-- `images` — folder of scan images.
-- `first_scan_no` — scan number that is printed page `1`.
-- `first_logical_page` — the printed page number of that first scan (usually `1`).
-- `xml` *(optional, per volume)* — override the XML file; defaults to `xml_dir/rg{vol}.xml`.
+- `parts` — ordered list of the volume's books. Each has:
+  - `images` — folder of scan images.
+  - `first_scan_no` — the first scan to use from that book (lower ones, e.g.
+    cover pages, are skipped).
+  - `first_logical_page` *(optional)* — the printed page number of that first
+    scan. For the first book this is usually `1`; **omit it on later books** so
+    the page numbers automatically continue from where the previous book ended.
+- `xml` *(optional, per volume)* — override the XML file; defaults to
+  `xml_dir/rg{vol}.xml`.
 
 The web panel shows a **Volume** dropdown. Pick a volume there to switch the
 panel to it without restarting; `--vol N` on the command line does the same on
@@ -113,18 +123,19 @@ Useful options:
 
 ## Outputs
 
-For `--vol 8`:
+For `--vol 8` (outputs land in `data/output/`):
 
 | File | Contents |
 |---|---|
-| `output/rg8_pages.tsv` | One row per scan: `page`, `scan`, `page_source`, `entries_on_page`, `last_entry`, `last_block`, `last_kind`, `position`, `position_en`, `span_start`, `span_end`, `status`, `score`, `overridden`, `ocr_last_lines`. |
-| `output/rg8_blocks.tsv` | One row per `head`/`regest`: `entry`, `block_id`, `label`, `kind`, `page_start`, `page_end`, `pages`, `status` (`complete` / `continues`), `source`, `warning`. |
-| `output/rg8_live/latest.jpg` | Most recent annotated scan (updated during `run`). |
-| `output/rg8_live/recent.jpg` | Last few annotated scans in a strip. |
-| `output/rg8_randomN/` | Annotated samples and `contact_sheet.jpg`. |
-| `output/rg8_review.json` | Manual review overrides saved by the web app. |
-| `output/rg8_pages_reviewed.tsv` | Written by the web app's `/export`: TSV + overrides. |
-| `output/rg8_report.tsv` | Written by the web app's `/download/report`: per-block `entry`, `block_id`, `kind`, `page_start`, `page_end`, `span`, `conf`, `overridden`. |
+| `data/output/rg8_pages.tsv` | One row per scan: `page`, `scan`, `page_source`, `entries_on_page`, `last_entry`, `last_block`, `last_kind`, `position`, `position_en`, `span_start`, `span_end`, `status`, `score`, `overridden`, `ocr_last_lines`. |
+| `data/output/rg8_blocks.tsv` | One row per `head`/`regest`: `entry`, `block_id`, `label`, `kind`, `page_start`, `page_end`, `pages`, `status` (`complete` / `continues`), `source`, `warning`. |
+| `data/output/rg8_live/latest.jpg` | Most recent annotated scan (updated during `run`). |
+| `data/output/rg8_live/recent.jpg` | Last few annotated scans in a strip. |
+| `data/output/rg8_randomN/` | Annotated samples and `contact_sheet.jpg`. |
+| `data/output/rg8_review.json` | Manual review overrides saved by the web app. |
+| `data/output/rg8_page_review.json` | Page-number corrections (scan → page) saved by the web app. |
+| `data/output/rg8_pages_<timestamp>.tsv` | Written by the web app's `/export` and `/download/pages`: the per-page table with review overrides applied (`overridden = yes` on corrected pages). |
+| `data/output/rg8_page_per_regest.tsv` | Written by the web app's `/download/report`: one row per `head`/`regest` with `petentenvita`, `last regest/head`, `kind`, `page_start`, `page_end`, `span`, `conf`, `overridden`. |
 
 Annotation colors:
 

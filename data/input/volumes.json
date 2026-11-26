@@ -1,0 +1,29 @@
+{
+  "xml_dir": "data/input/xmls",
+  "output_dir": "data/output",
+  "debug_dir": "data/debug",
+  "volumes": {
+    "5": {
+      "parts": [
+        {"name": "5.1.1", "images": "data/input/scan/5/He 6481 (5,1,1", "first_scan_no": 134, "first_logical_page": 1},
+        {"name": "5.1.2", "images": "data/input/scan/5/He 6481 (5,1,2", "first_scan_no": 8},
+        {"name": "5.1.3", "images": "data/input/scan/5/He 6481 (5,1,3", "first_scan_no": 8}
+      ]
+    },
+    "6": {
+      "parts": [
+        {"name": "6.1", "images": "data/input/scan/6/He 6481 (6,1", "first_scan_no": 47, "first_logical_page": 1}
+      ]
+    },
+    "7": {
+      "parts": [
+        {"name": "7.1", "images": "data/input/scan/7/He 6481 (7,1_2", "first_scan_no": 42, "first_logical_page": 1}
+      ]
+    },
+    "8": {
+      "parts": [
+        {"name": "8.1", "images": "data/input/scan/8/H4 6481 (8,1", "first_scan_no": 71, "first_logical_page": 1}
+      ]
+    }
+  }
+}
