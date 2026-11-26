@@ -5,7 +5,7 @@ For each page scan of a *Repertorium Germanicum* volume, answer two questions:
 1. **Which printed page number is on the scan?**
 2. **Which entry block is at the bottom of the page, and does it end there or
    continue on the next page?** The block can be the `head` of the entry or a
-   regest (`rg1`, `rg2`, …).
+   regest.
 
 `rgpage.py` is self-contained: it reads the scans and the RG XML directly, runs
 Tesseract, and writes both tables and annotated images. It does **not** depend
@@ -15,9 +15,22 @@ on the old debug tables in `legacy/`.
 
 ```bash
 git clone https://github.com/luanamoraescosta/RGpageparser && cd RGpageparser
-pip install -r requirements.txt            # Python 3.9+; Tesseract must be installed
-python rgpage.py run --vol 8               # review panel opens in the browser
+
+# 1. create and activate a virtual environment (Python 3.9+; Tesseract must be installed)
+python -m venv .venv
+source .venv/bin/activate                  # on Windows: .venv\Scripts\activate
+
+# 2. install dependencies
+pip install -r requirements.txt
+
+# 3. run the OCR (reads the scans and builds the page/block tables; results cached)
+python rgpage.py run --vol 8               # or `scan --vol 8` to only OCR and cache
+
+# 4. open the review panel in the browser (no re-run)
+python rgpage.py review --vol 8
 ```
+
+The review panel also opens automatically at the end of `run` / `match`.
 
 Just keep the repo next to the data (paths are auto-detected):
 
@@ -76,9 +89,6 @@ panel.
 # OCR every scan and build the page/block tables
 python rgpage.py run --vol 8
 
-# same, with the EasyOCR safety net and a live OpenCV window
-python rgpage.py run --vol 8 --easyocr --show
-
 # only OCR and cache, no matching
 python rgpage.py scan --vol 8
 
@@ -89,7 +99,7 @@ python rgpage.py match --vol 8
 python rgpage.py match --vol 8 --random 20 --seed 42
 
 # a small trial run: first 20 scans
-python rgpage.py run --vol 8 --limit 20 --random 5
+python rgpage.py run --vol 5 --limit 20 --random 5
 ```
 
 After `run` and `match` the **review panel opens automatically** in the
@@ -186,10 +196,10 @@ Runtime on the development Mac is about 5 s per scan (roughly 70 minutes for
 
 - Python 3.9+
 - Tesseract (`brew install tesseract`)
-- Python packages:
+- Python packages (install from `requirements.txt`):
 
 ```bash
-pip install opencv-python numpy pytesseract Pillow rapidfuzz
+pip install -r requirements.txt
 # optional, only for --easyocr:
 pip install easyocr
 ```
